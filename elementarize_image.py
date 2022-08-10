@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import shutil
 import subprocess
+import pathlib
 
 MIN_DIFF = 2_000
 
@@ -172,8 +173,14 @@ def translate(value, leftMin, leftMax, rightMin, rightMax):
 def generate_output_image(output_image, params_history, scale_factor, save_progress_path):
   progress_images = []
 
-  if save_progress_path is not None and not os.path.exists(save_progress_path):
-    os.mkdir(save_progress_path)
+  index_offset = 0
+  if save_progress_path is not None:
+    if not os.path.exists(save_progress_path):
+      os.mkdir(save_progress_path)
+    else:
+      files = [pathlib.Path(p).stem for p in os.listdir(save_progress_path)]
+      indexes = [int(f) for f in files if f.isnumeric()]
+      index_offset = max(indexes) + 1
 
   print("Generating final image")
   for idx, param in tqdm(enumerate(params_history), total=len(params_history)):
@@ -197,7 +204,7 @@ def generate_output_image(output_image, params_history, scale_factor, save_progr
     if save_progress_path is not None:
       image = Image.fromarray(output_image, mode="RGB")
       if save_progress_path is not None:
-        image.save(f"{save_progress_path}/{idx}.png")
+        image.save(f"{save_progress_path}/{idx + index_offset}.png")
 
   return Image.fromarray(output_image, mode="RGB"), progress_images
 
@@ -214,6 +221,7 @@ if __name__ == '__main__':
   parser.add_argument("--mode", "-m", help="Select element which will be generated (0 - line/rectangle, 1 - circle, 2 - ellipse, 3 - triangles, 4 - squares, 5 - pentagon, bigger mode values will generate coresponding polygon)", type=int, default=0)
   parser.add_argument("--width_splits", "-ws", help="Number of width splits for generating elements in smaller more specific areas (1 = no splits - default)", type=int, default=1)
   parser.add_argument("--height_splits", "-hs", help="Same as width splits only for height", type=int, default=1)
+  parser.add_argument("--target_high_distance_splits", "-thds", action="store_true", help="Target zones with highest distance from input images (works only when using splits")
   parser.add_argument("--workers", "-w", help="Number of workers to serach for solution", type=int, default=4)
   parser.add_argument("--progress", "-p", action="store_true", help="Show progress")
   parser.add_argument("--output", "-o", help="Path where to save output image", type=str, required=False)
@@ -285,19 +293,25 @@ if __name__ == '__main__':
       mode = args.mode if not args.random_mode else random.randint(0, 5)
       min_width, max_width = 0, resized_width
       min_height, max_height = 0, resized_height
-      if args.width_splits > 1:
-        selected_width_reg = random.randint(0, args.width_splits - 1)
+      selected_width_reg = 0
+      selected_height_reg = 0
+      if args.width_splits > 1 or args.height_splits > 1:
+        if args.target_high_distance_splits:
+          distances = [get_distance(
+            resized_input_image[height_split_coef * iy:min(resized_height, height_split_coef * (iy + 1)) - 1, width_split_coef * ix:min(resized_width, width_split_coef * (ix + 1)) - 1, :],
+            process_image_data[height_split_coef * iy:min(resized_height, height_split_coef * (iy + 1)) - 1, width_split_coef * ix:min(resized_width, width_split_coef * (ix + 1)) - 1, :]
+          ) for iy in range(args.height_splits) for ix in range(args.width_splits)]
+          distances = np.array(distances, dtype=int).reshape((args.height_splits, args.width_splits))
+          selected_height_reg, selected_width_reg = np.unravel_index(distances.argmax(), distances.shape)
+        else:
+          selected_width_reg = random.randint(0, args.width_splits - 1)
+          selected_height_reg = random.randint(0, args.height_splits - 1)
+
         min_width = width_split_coef * selected_width_reg
         max_width = min(resized_width, width_split_coef * (selected_width_reg + 1))
-      else:
-        selected_width_reg = 0
 
-      if args.height_splits > 1:
-        selected_height_reg = random.randint(0, args.height_splits - 1)
         min_height = height_split_coef * selected_height_reg
         max_height = min(resized_height, height_split_coef * (selected_height_reg + 1))
-      else:
-        selected_height_reg = 0
 
       get_params_function = partial(get_params, int(max_size), resized_input_image, process_image_data, mode, min_width, max_width, min_height, max_height, args.min_alpha, args.max_alpha)
 
@@ -358,7 +372,7 @@ if __name__ == '__main__':
 
   if args.progress_video is not None:
     print("Generating progress video")
-    process = subprocess.Popen(f"ffmpeg -r {args.progress_video_framerate} -f image2 -i {progress_images_path}/%d.png -vcodec libx264 -crf 25 -pix_fmt yuv420p {args.progress_video}")
+    process = subprocess.Popen(f"ffmpeg -r {args.progress_video_framerate} -f image2 -i {progress_images_path}/%d.png -vcodec libx264 -crf 25 -pix_fmt yuv420p {args.progress_video}", stdout=subprocess.DEVNULL)
     process.wait()
     if args.progress_output is None:
       shutil.rmtree(progress_images_path, ignore_errors=True)
