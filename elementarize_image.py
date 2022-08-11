@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import pathlib
 
-MIN_DIFF = 2_000
+MIN_DIFF = 5_000
 
 @njit(nogil=True)
 def get_random_color(min_alpha, max_alpha):
@@ -140,13 +140,17 @@ def draw_element(params, output_image, mode):
   return np.array(img.convert(mode="RGB")), bbox
 
 @njit(nogil=True)
-def get_distance(original, fake):
+def get_sum_distance(original, fake):
   return np.sum((original - fake) ** 2)
 
 @njit(nogil=True)
+def get_mean_distance(original, fake):
+  return np.mean((original - fake) ** 2)
+
+@njit(nogil=True)
 def get_window_distances(original_window, output_window, current_window):
-  prev_distance = get_distance(original_window, output_window)
-  new_distance = get_distance(original_window, current_window)
+  prev_distance = get_sum_distance(original_window, output_window)
+  new_distance = get_sum_distance(original_window, current_window)
   return prev_distance, new_distance
 
 def get_params(max_size, original_image, output_image, mode, min_width, max_width, min_height, max_height, min_alpha, max_alpha, _):
@@ -215,7 +219,8 @@ if __name__ == '__main__':
   parser.add_argument("--tries", "-t", help="Number of tries for each element", type=int, default=500)
   parser.add_argument("--repeats_limit", "-rl", help="Limit number of repeats per element", type=int, default=20)
   parser.add_argument("--size_multiplier", "-sm", help="Multiplier of size in connection to image (split) dimensions (size dont apply to mode 2)", type=float, default=0.4)
-  parser.add_argument("--decay_min_size", "-dms", help="Minimum element size to which will size decay overtime (if not set no decay will happen) (size dont apply to mode 2)", type=int, required=False)
+  parser.add_argument("--size_decay_min", "-sdm", help="Minimum element size to which will size decay overtime (if not set no decay will happen) (size dont apply to mode 2)", type=int, required=False)
+  parser.add_argument("--size_decay_coef", "-sdc", help="Coefficient of size decay", type=float, default=1)
   parser.add_argument("--min_alpha", "-mina", help="Minimal alpha value of element (default 1) (can't be less than 1)", type=int, default=1)
   parser.add_argument("--max_alpha", "-maxa", help="Maximum alpha value of element (default 255) (can't be more than 255)", type=int, default=255)
   parser.add_argument("--mode", "-m", help="Select element which will be generated (0 - line/rectangle, 1 - circle, 2 - ellipse, 3 - triangles, 4 - squares, 5 - pentagon, bigger mode values will generate coresponding polygon)", type=int, default=0)
@@ -246,6 +251,7 @@ if __name__ == '__main__':
   assert args.width_splits >= 1 and args.height_splits >= 1, "Invalid split values"
   assert 1 <= args.min_alpha <= args.max_alpha <= 255, "Invalid element alpha settings"
   assert args.progress_video_framerate >= 1, "Invalid progress video framerate"
+  assert args.size_decay_coef > 0, "Invalid size decay coefficient"
 
   input_image = Image.open(args.input).convert('RGB')
   # HxWxCH
@@ -276,8 +282,8 @@ if __name__ == '__main__':
   default_max_thickness = max_size = max(1, max_size)
   print(f"Tile size: {width_split_coef}x{height_split_coef}")
 
-  if args.decay_min_size is not None:
-    assert 1 <= args.decay_min_size <= max_size, f"Invalid decay minimum size, maximum is {max_size} for current settings"
+  if args.size_decay_min is not None:
+    assert 1 <= args.size_decay_min <= max_size, f"Invalid decay minimum size, maximum is {max_size} for current settings"
 
   line_params_history = []
   executor = ThreadPoolExecutor(args.workers)
@@ -297,7 +303,7 @@ if __name__ == '__main__':
       selected_height_reg = 0
       if args.width_splits > 1 or args.height_splits > 1:
         if args.target_high_distance_splits:
-          distances = [get_distance(
+          distances = [get_mean_distance(
             resized_input_image[height_split_coef * iy:min(resized_height, height_split_coef * (iy + 1)) - 1, width_split_coef * ix:min(resized_width, width_split_coef * (ix + 1)) - 1, :],
             process_image_data[height_split_coef * iy:min(resized_height, height_split_coef * (iy + 1)) - 1, width_split_coef * ix:min(resized_width, width_split_coef * (ix + 1)) - 1, :]
           ) for iy in range(args.height_splits) for ix in range(args.width_splits)]
@@ -335,12 +341,12 @@ if __name__ == '__main__':
       line_params_history.append((mode, params))
       params = [params, process_image_data, mode]
       process_image_data, bbox = draw_element(*params)
-      if args.decay_min_size is not None:
-        max_size = max(args.decay_min_size, translate(line_index, 0, args.elements, default_max_thickness, args.decay_min_size))
+      if args.size_decay_min is not None:
+        max_size = max(args.size_decay_min, translate(args.size_decay_coef * line_index, 0, args.elements, default_max_thickness, args.size_decay_min))
 
       if args.progress:
         # print(f"Distance: {get_distance(original_image, output_image_data)}, Improvement: {distance_diff}")
-        iterator.set_description(f"Distance: {get_distance(resized_input_image, process_image_data)}, Improvement: {distance_diff}, Max size: {int(max_size)}")
+        iterator.set_description(f"Distance: {get_sum_distance(resized_input_image, process_image_data)}, Improvement: {distance_diff}, Max size: {int(max_size)}")
 
         prog_image = cv2.cvtColor(process_image_data, cv2.COLOR_RGB2BGR)
         for xidx in range(args.width_splits):
