@@ -13,6 +13,7 @@ from functools import partial
 import shutil
 import subprocess
 import pathlib
+import threading
 
 MIN_DIFF = 5_000
 
@@ -167,13 +168,6 @@ def get_params(max_size, original_image, output_image, mode, min_width, max_widt
   # cv2.waitKey(0)
   return prev_distance - new_distance, params
 
-@njit(nogil=True)
-def translate(value, leftMin, leftMax, rightMin, rightMax):
-  leftSpan = leftMax - leftMin
-  rightSpan = rightMax - rightMin
-  valueScaled = float(value - leftMin) / float(leftSpan)
-  return rightMin + (valueScaled * rightSpan)
-
 def generate_output_image(output_image, params_history, scale_factor, save_progress_path):
   progress_images = []
 
@@ -212,6 +206,165 @@ def generate_output_image(output_image, params_history, scale_factor, save_progr
 
   return Image.fromarray(output_image, mode="RGB"), progress_images
 
+class Worker(threading.Thread):
+  def __init__(self, name, min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, process_image, workers, repeats, tries, mode, add_params_callback, progress_image_lock):
+    super(Worker, self).__init__(daemon=True)
+
+    self.name = name
+
+    self.min_width = min_width
+    self.max_width = max_width
+    self.min_height = min_height
+    self.max_height = max_height
+    self.min_alpha = min_alpha
+    self.max_alpha = max_alpha
+    self.max_size = max_size
+
+    self.reference_image = reference_image
+    self.process_image = process_image
+    self.progress_image_lock = progress_image_lock
+
+    self.workers = workers
+
+    self.executor = None
+    self.repeats = repeats
+    self.tries = tries
+    self.mode = mode
+
+    self.add_params_callback = add_params_callback
+
+    self.__terminated = False
+
+  def terminate(self):
+    self.__terminated = True
+
+  def run(self) -> None:
+    self.executor = ThreadPoolExecutor(self.workers)
+    _indexes = list(range(self.tries))
+
+    while True:
+      repeats = 0
+      mode = self.mode if self.mode is not None else random.randint(0, 5)
+      get_params_function = partial(get_params, self.max_size, self.reference_image, self.process_image, mode, self.min_width, self.max_width, self.min_height, self.max_height, self.min_alpha, self.max_alpha)
+
+      while True:
+        scored_params = list(self.executor.map(get_params_function, _indexes))
+        scored_params.sort(key=lambda x: x[0], reverse=True)
+
+        distance_diff = scored_params[0][0]
+
+        if distance_diff > MIN_DIFF:
+          break
+        else:
+          repeats += 1
+          if repeats >= self.repeats:
+            break
+
+        if self.__terminated:
+          break
+
+      if repeats >= self.repeats:
+        print(f"[Worker {self.name}] Retries limit reached, ending")
+        break
+
+      if self.__terminated:
+        break
+
+      params = scored_params[0][1]
+      self.add_params_callback((mode, params))
+
+      params = [params, self.process_image, mode]
+      self.progress_image_lock.acquire()
+      tmp_process_image, _ = draw_element(*params)
+      np.copyto(self.process_image, tmp_process_image)
+      self.progress_image_lock.release()
+
+    self.executor.shutdown()
+    print(f"[Worker {self.name}] Ended")
+
+class WorkerManager:
+  def __init__(self, width_divs, height_divs, width_coef, height_coef, width, height, min_alpha, max_alpha, max_size, reference_image, process_image, number_of_lines, workers, repeats, tries, mode):
+    self.param_store = []
+    self.workers = []
+    self.number_of_lines = number_of_lines
+    self.reference_image = reference_image
+    self.process_image = process_image
+    self.progress_image_lock = threading.Lock()
+
+    self.width_splits = width_divs
+    self.height_splits = height_divs
+
+    self.line_counter = 0
+    self.progress_iterator = tqdm(total=number_of_lines)
+
+    for yidx in range(height_divs):
+      min_height = height_coef * yidx
+      max_height = min(height, height_coef * (yidx + 1))
+      for xidx in range(width_divs):
+        min_width = width_coef * xidx
+        max_width = min(width, width_coef * (xidx + 1))
+        self.workers.append(Worker(f"{xidx};{yidx}", min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, self.process_image, workers, repeats, tries, mode, self.add_params, self.progress_image_lock))
+
+  def add_params(self, data):
+    self.param_store.append(data)
+    self.line_counter += 1
+
+    self.progress_iterator.update()
+
+    if self.line_counter >= self.number_of_lines:
+      print("Generation done")
+      self.terminate_workers()
+
+  def workers_running(self):
+    return any([worker.is_alive() for worker in self.workers])
+
+  def terminate_workers(self):
+    print("Terminating workers")
+    for worker in self.workers:
+      worker.terminate()
+
+  def get_history(self):
+    return self.param_store
+
+  def start_workers(self):
+    for worker in self.workers:
+      worker.start()
+
+  def run(self):
+    prog_image = cv2.cvtColor(self.process_image, cv2.COLOR_RGB2BGR)
+    cv2.imshow("progress_window", prog_image)
+
+    self.start_workers()
+
+    try:
+      while self.workers_running():
+        current_distance = get_sum_distance(self.reference_image, self.process_image)
+        cv2.setWindowTitle("progress_window", f"Progress: {self.line_counter}/{self.number_of_lines}, Distance: {current_distance}")
+
+        self.progress_iterator.set_description(f"Distance: {current_distance}")
+
+        prog_image = cv2.cvtColor(self.process_image, cv2.COLOR_RGB2BGR)
+
+        for xidx in range(self.width_splits):
+          x1 = width_split_coef * xidx
+          x2 = min(resized_width, width_split_coef * (xidx + 1))
+          for yidx in range(self.height_splits):
+            y1 = height_split_coef * yidx
+            y2 = min(resized_height, height_split_coef * (yidx + 1))
+            idx = xidx * self.height_splits + yidx
+            cv2.rectangle(prog_image, (x1, y1), (x2 - 1, y2 - 1), color=(250, 50, 5) if self.workers[idx].is_alive() else (15, 5, 245))
+
+        cv2.imshow("progress_window", prog_image)
+        cv2.waitKey(100)
+    except KeyboardInterrupt:
+      print("Interrupted by user")
+
+      self.terminate_workers()
+      for worker in self.workers:
+        worker.join()
+
+    cv2.destroyAllWindows()
+
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument("--input", "-i", help="Path to input image", type=str, required=True)
@@ -219,16 +372,12 @@ if __name__ == '__main__':
   parser.add_argument("--tries", "-t", help="Number of tries for each element", type=int, default=500)
   parser.add_argument("--repeats_limit", "-rl", help="Limit number of repeats per element", type=int, default=20)
   parser.add_argument("--size_multiplier", "-sm", help="Multiplier of size in connection to image (split) dimensions (size dont apply to mode 2)", type=float, default=0.4)
-  parser.add_argument("--size_decay_min", "-sdm", help="Minimum element size to which will size decay overtime (if not set no decay will happen) (size dont apply to mode 2)", type=int, required=False)
-  parser.add_argument("--size_decay_coef", "-sdc", help="Coefficient of size decay", type=float, default=1)
   parser.add_argument("--min_alpha", "-mina", help="Minimal alpha value of element (default 1) (can't be less than 1)", type=int, default=1)
   parser.add_argument("--max_alpha", "-maxa", help="Maximum alpha value of element (default 255) (can't be more than 255)", type=int, default=255)
   parser.add_argument("--mode", "-m", help="Select element which will be generated (0 - line/rectangle, 1 - circle, 2 - ellipse, 3 - triangles, 4 - squares, 5 - pentagon, bigger mode values will generate coresponding polygon)", type=int, default=0)
   parser.add_argument("--width_splits", "-ws", help="Number of width splits for generating elements in smaller more specific areas (1 = no splits - default)", type=int, default=1)
   parser.add_argument("--height_splits", "-hs", help="Same as width splits only for height", type=int, default=1)
-  parser.add_argument("--target_high_distance_splits", "-thds", action="store_true", help="Target zones with highest distance from input images (works only when using splits")
-  parser.add_argument("--workers", "-w", help="Number of workers to serach for solution", type=int, default=4)
-  parser.add_argument("--progress", "-p", action="store_true", help="Show progress")
+  parser.add_argument("--workers_per_tile", "-w", help="Number of workers for each tile", type=int, default=2)
   parser.add_argument("--output", "-o", help="Path where to save output image", type=str, required=False)
   parser.add_argument("--progress_output", "-po", help="Path to folder where progress images will be saved", type=str, required=False)
   parser.add_argument("--progress_video", "-pv", help="Path to video of progress (works only with ffmpeg installed and in PATH) (if progress_output is not defined temporary folder with images will be created)", type=str, required=False)
@@ -242,7 +391,7 @@ if __name__ == '__main__':
 
   assert os.path.exists(args.input) and os.path.isfile(args.input), "Invalid input file"
   assert args.elements > 0 and args.tries > 0 and args.repeats_limit > 0 and args.size_multiplier > 0, "Invalid image generation params"
-  assert args.workers > 0, "Invalid number of workers"
+  assert args.workers_per_tile > 0, "Invalid number of workers"
   assert args.process_scale_factor > 0, "Invalid process scale factor"
   assert args.output_scale_factor > 0, "Invalid output scale factor"
   assert args.mode >= 0, "Invalid mode selected"
@@ -251,7 +400,6 @@ if __name__ == '__main__':
   assert args.width_splits >= 1 and args.height_splits >= 1, "Invalid split values"
   assert 1 <= args.min_alpha <= args.max_alpha <= 255, "Invalid element alpha settings"
   assert args.progress_video_framerate >= 1, "Invalid progress video framerate"
-  assert args.size_decay_coef > 0, "Invalid size decay coefficient"
 
   input_image = Image.open(args.input).convert('RGB')
   # HxWxCH
@@ -269,106 +417,26 @@ if __name__ == '__main__':
 
   resized_height, resized_width, _ = resized_input_image.shape
 
-  process_image_data = np.zeros_like(resized_input_image)
+  process_image = np.zeros_like(resized_input_image)
   if args.checkpoint is not None:
     checkpoint_image = Image.open(args.checkpoint).convert("RGB")
     checkpoint_image = np.array(checkpoint_image)
-    process_image_data = cv2.resize(checkpoint_image, dsize=(process_image_data.shape[1], process_image_data.shape[0]), interpolation=cv2.INTER_AREA)
+    process_image = cv2.resize(checkpoint_image, dsize=(process_image.shape[1], process_image.shape[0]), interpolation=cv2.INTER_AREA)
     output_image = checkpoint_image.copy() # We don't resize because we expect that this is wanted size and resizing will only introduce artifacts and image distortion
 
   width_split_coef = math.ceil(resized_width / args.width_splits)
   height_split_coef = math.ceil(resized_height / args.height_splits)
   max_size = min(width_split_coef, height_split_coef) * args.size_multiplier
-  default_max_thickness = max_size = max(1, max_size)
+  max_size = int(max(1, max_size))
   print(f"Tile size: {width_split_coef}x{height_split_coef}")
 
-  if args.size_decay_min is not None:
-    assert 1 <= args.size_decay_min <= max_size, f"Invalid decay minimum size, maximum is {max_size} for current settings"
-
-  line_params_history = []
-  executor = ThreadPoolExecutor(args.workers)
   start_time = time.time()
-  line_index = 0
-  _indexes = list(range(args.tries))
+  worker_manager = WorkerManager(args.width_splits, args.height_splits, width_split_coef, height_split_coef, resized_width, resized_height, args.min_alpha, args.max_alpha, max_size, resized_input_image, process_image, args.elements, args.workers_per_tile, args.repeats_limit, args.tries, args.mode if not args.random_mode else None)
+  worker_manager.run()
 
-  try:
-    iterator = tqdm(range(args.elements))
-    for line_index in iterator:
-      repeats = 0
+  line_params_history = worker_manager.get_history()
 
-      mode = args.mode if not args.random_mode else random.randint(0, 5)
-      min_width, max_width = 0, resized_width
-      min_height, max_height = 0, resized_height
-      selected_width_reg = 0
-      selected_height_reg = 0
-      if args.width_splits > 1 or args.height_splits > 1:
-        if args.target_high_distance_splits:
-          distances = [get_mean_distance(
-            resized_input_image[height_split_coef * iy:min(resized_height, height_split_coef * (iy + 1)) - 1, width_split_coef * ix:min(resized_width, width_split_coef * (ix + 1)) - 1, :],
-            process_image_data[height_split_coef * iy:min(resized_height, height_split_coef * (iy + 1)) - 1, width_split_coef * ix:min(resized_width, width_split_coef * (ix + 1)) - 1, :]
-          ) for iy in range(args.height_splits) for ix in range(args.width_splits)]
-          distances = np.array(distances, dtype=int).reshape((args.height_splits, args.width_splits))
-          selected_height_reg, selected_width_reg = np.unravel_index(distances.argmax(), distances.shape)
-        else:
-          selected_width_reg = random.randint(0, args.width_splits - 1)
-          selected_height_reg = random.randint(0, args.height_splits - 1)
-
-        min_width = width_split_coef * selected_width_reg
-        max_width = min(resized_width, width_split_coef * (selected_width_reg + 1))
-
-        min_height = height_split_coef * selected_height_reg
-        max_height = min(resized_height, height_split_coef * (selected_height_reg + 1))
-
-      get_params_function = partial(get_params, int(max_size), resized_input_image, process_image_data, mode, min_width, max_width, min_height, max_height, args.min_alpha, args.max_alpha)
-
-      while True:
-        scored_params = list(executor.map(get_params_function, _indexes))
-        scored_params.sort(key=lambda x: x[0], reverse=True)
-
-        distance_diff = scored_params[0][0]
-
-        if distance_diff > MIN_DIFF:
-          break
-        else:
-          repeats += 1
-          if repeats >= args.repeats_limit:
-            break
-      if repeats >= args.repeats_limit:
-        print("Retries limit reached, ending")
-        break
-
-      params = scored_params[0][1]
-      line_params_history.append((mode, params))
-      params = [params, process_image_data, mode]
-      process_image_data, bbox = draw_element(*params)
-      if args.size_decay_min is not None:
-        max_size = max(args.size_decay_min, translate(args.size_decay_coef * line_index, 0, args.elements, default_max_thickness, args.size_decay_min))
-
-      if args.progress:
-        # print(f"Distance: {get_distance(original_image, output_image_data)}, Improvement: {distance_diff}")
-        iterator.set_description(f"Distance: {get_sum_distance(resized_input_image, process_image_data)}, Improvement: {distance_diff}, Max size: {int(max_size)}")
-
-        prog_image = cv2.cvtColor(process_image_data, cv2.COLOR_RGB2BGR)
-        for xidx in range(args.width_splits):
-          x1 = width_split_coef * xidx
-          x2 = min(resized_width, width_split_coef * (xidx + 1))
-          for yidx in range(args.height_splits):
-            y1 = height_split_coef * yidx
-            y2 = min(resized_height, height_split_coef * (yidx + 1))
-            cv2.rectangle(prog_image, (x1, y1), (x2 - 1, y2 - 1), color=(255, 0, 0))
-
-        cv2.rectangle(prog_image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), color=(255, 150, 0))
-        cv2.rectangle(prog_image, (min_width, min_height), (max_width - 1, max_height - 1), color=(0, 200, 255))
-
-        cv2.imshow("progress_window", prog_image)
-        cv2.setWindowTitle("progress_window", f"Progress {line_index + 1}/{args.elements}")
-        cv2.waitKey(1)
-  except KeyboardInterrupt:
-    print("Interrupted by user")
-
-  cv2.destroyAllWindows()
-  executor.shutdown()
-  print(f"{line_index + 1} elements, Elapsed: {(time.time() - start_time) / 60}mins")
+  print(f"{len(line_params_history)} elements, Elapsed: {(time.time() - start_time) / 60}mins")
 
   progress_images_path = args.progress_output if args.progress_output is not None else ("tmp" if args.progress_video is not None else None)
   output_image_object, progress_images = generate_output_image(output_image, line_params_history, output_image.shape[1] / resized_width, progress_images_path)
