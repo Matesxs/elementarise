@@ -168,6 +168,13 @@ def get_params(max_size, original_image, output_image, mode, min_width, max_widt
   # cv2.waitKey(0)
   return prev_distance - new_distance, params
 
+@njit(nogil=True)
+def translate(value, leftMin, leftMax, rightMin, rightMax):
+  leftSpan = leftMax - leftMin
+  rightSpan = rightMax - rightMin
+  valueScaled = float(value - leftMin) / float(leftSpan)
+  return rightMin + (valueScaled * rightSpan)
+
 def generate_output_image(output_image, params_history, scale_factor, save_progress_path):
   progress_images = []
 
@@ -283,7 +290,7 @@ class Worker(threading.Thread):
     print(f"[Worker {self.name}] Ended")
 
 class WorkerManager:
-  def __init__(self, width_divs, height_divs, width_coef, height_coef, width, height, min_alpha, max_alpha, max_size, reference_image, process_image, number_of_lines, workers, repeats, tries, mode):
+  def __init__(self, width_divs, height_divs, width_coef, height_coef, width, height, min_alpha, max_alpha, max_size, max_size_decay_minimum, max_size_decay_coef, reference_image, process_image, number_of_lines, workers, repeats, tries, mode):
     self.param_store = []
     self.workers = []
     self.number_of_lines = number_of_lines
@@ -296,6 +303,10 @@ class WorkerManager:
 
     self.line_counter = 0
     self.progress_iterator = tqdm(total=number_of_lines)
+
+    self.max_size = self.default_max_size = max_size
+    self.max_size_decay_min = max_size_decay_minimum
+    self.max_size_decay_coef = max_size_decay_coef
 
     for yidx in range(height_divs):
       min_height = height_coef * yidx
@@ -338,10 +349,15 @@ class WorkerManager:
 
     try:
       while self.workers_running():
-        current_distance = get_sum_distance(self.reference_image, self.process_image)
-        cv2.setWindowTitle("progress_window", f"Progress: {self.line_counter}/{self.number_of_lines}, Distance: {current_distance}")
+        if self.max_size_decay_min is not None:
+          self.max_size = int(max(self.max_size_decay_min, translate(self.max_size_decay_coef * self.line_counter, 0, self.number_of_lines, self.default_max_size, self.max_size_decay_min)))
+          for worker in self.workers:
+            worker.max_size = self.max_size
 
-        self.progress_iterator.set_description(f"Distance: {current_distance}")
+        current_distance = get_sum_distance(self.reference_image, self.process_image)
+        cv2.setWindowTitle("progress_window", f"Progress: {self.line_counter}/{self.number_of_lines}, Distance: {current_distance}, Max size: {max_size}")
+
+        self.progress_iterator.set_description(f"Distance: {current_distance}, Max size: {self.max_size}")
 
         prog_image = cv2.cvtColor(self.process_image, cv2.COLOR_RGB2BGR)
 
@@ -372,6 +388,8 @@ if __name__ == '__main__':
   parser.add_argument("--tries", "-t", help="Number of tries for each element", type=int, default=500)
   parser.add_argument("--repeats_limit", "-rl", help="Limit number of repeats per element", type=int, default=20)
   parser.add_argument("--size_multiplier", "-sm", help="Multiplier of size in connection to image (split) dimensions (size dont apply to mode 2)", type=float, default=0.4)
+  parser.add_argument("--size_decay_min", "-sdm", help="Minimum element size to which will size decay overtime (if not set no decay will happen) (size dont apply to mode 2)", type=int, required=False)
+  parser.add_argument("--size_decay_coef", "-sdc", help="Coefficient of size decay", type=float, default=1)
   parser.add_argument("--min_alpha", "-mina", help="Minimal alpha value of element (default 1) (can't be less than 1)", type=int, default=1)
   parser.add_argument("--max_alpha", "-maxa", help="Maximum alpha value of element (default 255) (can't be more than 255)", type=int, default=255)
   parser.add_argument("--mode", "-m", help="Select element which will be generated (0 - line/rectangle, 1 - circle, 2 - ellipse, 3 - triangles, 4 - squares, 5 - pentagon, bigger mode values will generate coresponding polygon)", type=int, default=0)
@@ -400,6 +418,7 @@ if __name__ == '__main__':
   assert args.width_splits >= 1 and args.height_splits >= 1, "Invalid split values"
   assert 1 <= args.min_alpha <= args.max_alpha <= 255, "Invalid element alpha settings"
   assert args.progress_video_framerate >= 1, "Invalid progress video framerate"
+  assert args.size_decay_coef > 0, "Invalid size decay coefficient"
 
   input_image = Image.open(args.input).convert('RGB')
   # HxWxCH
@@ -430,8 +449,11 @@ if __name__ == '__main__':
   max_size = int(max(1, max_size))
   print(f"Tile size: {width_split_coef}x{height_split_coef}")
 
+  if args.size_decay_min is not None:
+    assert 1 <= args.size_decay_min <= max_size, f"Invalid decay minimum size, maximum is {max_size} for current settings"
+
   start_time = time.time()
-  worker_manager = WorkerManager(args.width_splits, args.height_splits, width_split_coef, height_split_coef, resized_width, resized_height, args.min_alpha, args.max_alpha, max_size, resized_input_image, process_image, args.elements, args.workers_per_tile, args.repeats_limit, args.tries, args.mode if not args.random_mode else None)
+  worker_manager = WorkerManager(args.width_splits, args.height_splits, width_split_coef, height_split_coef, resized_width, resized_height, args.min_alpha, args.max_alpha, max_size, args.size_decay_min, args.size_decay_coef, resized_input_image, process_image, args.elements, args.workers_per_tile, args.repeats_limit, args.tries, args.mode if not args.random_mode else None)
   worker_manager.run()
 
   line_params_history = worker_manager.get_history()
