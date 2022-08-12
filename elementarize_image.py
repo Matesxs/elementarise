@@ -214,7 +214,7 @@ def generate_output_image(output_image, params_history, scale_factor, save_progr
   return Image.fromarray(output_image, mode="RGB"), progress_images
 
 class Worker(threading.Thread):
-  def __init__(self, name, min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, process_image, workers, repeats, tries, mode, add_params_callback, progress_image_lock):
+  def __init__(self, name, min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, process_image, workers, repeats, tries, mode, add_params_callback, progress_image_lock, worker_print_lock):
     super(Worker, self).__init__(daemon=True)
 
     self.name = name
@@ -239,6 +239,8 @@ class Worker(threading.Thread):
     self.mode = mode
 
     self.add_params_callback = add_params_callback
+
+    self.worker_print_lock = worker_print_lock
 
     self.__terminated = False
 
@@ -271,7 +273,9 @@ class Worker(threading.Thread):
           break
 
       if repeats >= self.repeats:
+        self.worker_print_lock.acquire()
         print(f"[Worker {self.name}] Retries limit reached, ending")
+        self.worker_print_lock.release()
         break
 
       if self.__terminated:
@@ -287,7 +291,9 @@ class Worker(threading.Thread):
       self.progress_image_lock.release()
 
     self.executor.shutdown()
+    self.worker_print_lock.acquire()
     print(f"[Worker {self.name}] Ended")
+    self.worker_print_lock.release()
 
 class WorkerManager:
   def __init__(self, width_divs, height_divs, width_coef, height_coef, width, height, min_alpha, max_alpha, max_size, max_size_decay_minimum, max_size_decay_coef, reference_image, process_image, number_of_lines, workers, repeats, tries, mode):
@@ -297,6 +303,7 @@ class WorkerManager:
     self.reference_image = reference_image
     self.process_image = process_image
     self.progress_image_lock = threading.Lock()
+    self.worker_print_lock = threading.Lock()
 
     self.width_splits = width_divs
     self.height_splits = height_divs
@@ -314,7 +321,7 @@ class WorkerManager:
       for xidx in range(width_divs):
         min_width = width_coef * xidx
         max_width = min(width, width_coef * (xidx + 1))
-        self.workers.append(Worker(f"{xidx};{yidx}", min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, self.process_image, workers, repeats, tries, mode, self.add_params, self.progress_image_lock))
+        self.workers.append(Worker(f"{xidx};{yidx}", min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, self.process_image, workers, repeats, tries, mode, self.add_params, self.progress_image_lock, self.worker_print_lock))
 
   def add_params(self, data):
     self.param_store.append(data)
@@ -355,7 +362,7 @@ class WorkerManager:
             worker.max_size = self.max_size
 
         current_distance = get_sum_distance(self.reference_image, self.process_image)
-        cv2.setWindowTitle("progress_window", f"Progress: {self.line_counter}/{self.number_of_lines}, Distance: {current_distance}, Max size: {max_size}")
+        cv2.setWindowTitle("progress_window", f"Progress: {self.line_counter}/{self.number_of_lines}, Distance: {current_distance}, Max size: {self.max_size}")
 
         self.progress_iterator.set_description(f"Distance: {current_distance}, Max size: {self.max_size}")
 
