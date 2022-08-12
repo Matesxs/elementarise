@@ -104,10 +104,8 @@ def draw_element(params, output_image, mode):
   if mode == 0:
     overlay = Image.new("RGBA", img.size, params[5][:3] + (0,))
     draw = ImageDraw.Draw(overlay)
-    end_point = (params[0] + np.cos(params[4]) * params[2], params[1] + np.sin(params[4]) * params[2])
-    coords = [params[0], params[1], *end_point]
-    draw.line(coords, params[5], params[3])
-    bbox = get_line_boundingbox(np.array(coords, dtype=np.float64), params[3], width, height).astype(int)
+    draw.line(params[:4], params[5], params[4])
+    bbox = get_line_boundingbox(np.array(params[:4], dtype=np.float64), params[4], width, height).astype(int)
   elif mode == 1 or mode == 2:
     if mode == 1:
       thickness = (params[2] - 1) / 2
