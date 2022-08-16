@@ -203,15 +203,15 @@ class ImageSaver(threading.Thread):
     time.sleep(1)
     self.stopped.value = True
 
-  def get_data(self, limit=True):
+  def get_data(self, limit=None):
     data = []
     retrieved = 0
     while True:
       try:
         data.append(self.data_queue.get(block=True, timeout=10))
         retrieved += 1
-        if limit:
-          if retrieved >= 400:
+        if limit is not None:
+          if retrieved >= limit:
             break
       except queue.Empty:
         break
@@ -220,13 +220,13 @@ class ImageSaver(threading.Thread):
   def run(self) -> None:
     with ProcessPoolExecutor(math.ceil(multiprocessing.cpu_count() / 2)) as executor:
       while not self.stopped.value:
-        data = self.get_data()
+        data = self.get_data(limit=200)
         if not data:
           continue
 
         executor.map(save_image, data)
 
-      data = self.get_data(limit=False)
+      data = self.get_data()
       if data:
         executor.map(save_image, data)
 
@@ -278,7 +278,7 @@ def init_pool():
   signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 class Worker(threading.Thread):
-  def __init__(self, name, min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, process_image, workers, repeats, tries, mode, add_params_callback, progress_image_lock, worker_print_lock):
+  def __init__(self, name, min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, process_image, workers, repeats, tries, mode, add_params_callback, progress_image_lock, worker_print_lock, ready_semaphore, start_event):
     super(Worker, self).__init__(daemon=True)
 
     self.name = name
@@ -307,6 +307,8 @@ class Worker(threading.Thread):
 
     self.__terminated = False
     self.initialised = False
+    self.ready_semaphore = ready_semaphore
+    self.start_event = start_event
 
   def terminate(self):
     self.__terminated = True
@@ -316,6 +318,14 @@ class Worker(threading.Thread):
 
     try:
       with multiprocessing.Pool(self.workers, init_pool) as executor:
+        mode = self.mode if self.mode is not None else random.randint(0, 5)
+        get_params_function = partial(get_params, self.max_size, self.reference_image, self.process_image, mode, self.min_width, self.max_width, self.min_height, self.max_height, self.min_alpha, self.max_alpha)
+        executor.map(get_params_function, _indexes)
+        self.initialised = True
+
+        self.ready_semaphore.release()
+        self.start_event.wait()
+
         while True:
           repeats = 0
           mode = self.mode if self.mode is not None else random.randint(0, 5)
@@ -325,7 +335,6 @@ class Worker(threading.Thread):
             scored_params = list(executor.map(get_params_function, _indexes))
             scored_params = [param for param in scored_params if param is not None]
             scored_params.sort(key=lambda x: x[0], reverse=True)
-            self.initialised = True
 
             distance_diff = scored_params[0][0]
 
@@ -372,6 +381,8 @@ class WorkerManager:
     self.process_image = process_image
     self.progress_image_lock = threading.Lock()
     self.worker_print_lock = threading.Lock()
+    self.workers_ready_semaphore = threading.Semaphore(0)
+    self.workers_start_event = threading.Event()
 
     self.width_splits = width_divs
     self.height_splits = height_divs
@@ -389,7 +400,7 @@ class WorkerManager:
       for xidx in range(width_divs):
         min_width = width_coef * xidx
         max_width = min(width, width_coef * (xidx + 1))
-        self.workers.append(Worker(f"{xidx};{yidx}", min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, self.process_image, workers, repeats, tries, mode, self.add_params, self.progress_image_lock, self.worker_print_lock))
+        self.workers.append(Worker(f"{xidx};{yidx}", min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, self.process_image, workers, repeats, tries, mode, self.add_params, self.progress_image_lock, self.worker_print_lock, self.workers_ready_semaphore, self.workers_start_event))
 
   def add_params(self, data):
     self.param_store.append(data)
@@ -416,6 +427,13 @@ class WorkerManager:
     for worker in self.workers:
       worker.start()
 
+  def release_workers(self):
+    num_of_workers = len(self.workers)
+    for _ in range(num_of_workers):
+      self.workers_ready_semaphore.acquire()
+
+    self.workers_start_event.set()
+
   def draw_splits(self, image):
     for yidx in range(self.height_splits):
       y1 = height_split_coef * yidx
@@ -427,11 +445,20 @@ class WorkerManager:
         cv2.rectangle(image, (x1, y1), (x2 - 1, y2 - 1), color=((250, 50, 5) if self.workers[idx].initialised else (10, 150, 250)) if self.workers[idx].is_alive() else (15, 5, 245))
 
   def run(self):
+    self.start_workers()
+
+    current_distance = get_sum_distance(self.reference_image, self.process_image)
+    cv2.setWindowTitle("progress_window", f"Progress: {self.line_counter}/{self.number_of_lines}, Distance: {current_distance}, Max size: {self.max_size}")
+
+    self.progress_iterator.set_description(f"Distance: {current_distance}, Max size: {self.max_size}")
+
     prog_image = cv2.cvtColor(self.process_image, cv2.COLOR_RGB2BGR)
+    self.draw_splits(prog_image)
+
     cv2.imshow("progress_window", prog_image)
     cv2.waitKey(1)
 
-    self.start_workers()
+    self.release_workers()
 
     try:
       while self.workers_running():
