@@ -8,12 +8,15 @@ import random
 import cv2
 import time
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from functools import partial
 import shutil
 import subprocess
 import pathlib
 import threading
+import multiprocessing
+import ctypes
+import queue
 
 MIN_DIFF = 5_000
 
@@ -42,13 +45,11 @@ def get_ellipse_params(min_width, max_width, min_height, max_height, min_alpha, 
 
 @njit(nogil=True)
 def get_line_params(min_width, max_width, min_height, max_height, max_size, min_alpha, max_alpha):
-  x_coors = np.random.randint(min_width, max_width, size=2)
-  y_coors = np.random.randint(min_height, max_height, size=2)
-  return x_coors[0], \
-         y_coors[0], \
-         x_coors[1], \
-         y_coors[1], \
+  return random.randint(min_width, max_width - 1), \
+         random.randint(min_height, max_height - 1), \
+         random.randint(2, max_size), \
          random.randint(1, max_size), \
+         random.random() * np.pi * 2, \
          get_random_color(min_alpha, max_alpha)
 
 def calculate_coords(x_center, y_center, radius, starting_angle, number_of_vertices):
@@ -102,8 +103,10 @@ def draw_element(params, output_image, mode):
   if mode == 0:
     overlay = Image.new("RGBA", img.size, params[5][:3] + (0,))
     draw = ImageDraw.Draw(overlay)
-    draw.line(params[:4], params[5], params[4])
-    bbox = get_line_boundingbox(np.array(params[:4], dtype=np.float64), params[4], width, height).astype(int)
+    end_point = (params[0] + np.cos(params[4]) * params[2], params[1] + np.sin(params[4]) * params[2])
+    coords = [params[0], params[1], *end_point]
+    draw.line(coords, params[5], params[3])
+    bbox = get_line_boundingbox(np.array(coords, dtype=np.float64), params[3], width, height).astype(int)
   elif mode == 1 or mode == 2:
     if mode == 1:
       thickness = (params[2] - 1) / 2
@@ -175,11 +178,58 @@ def translate(value, leftMin, leftMax, rightMin, rightMax):
   valueScaled = float(value - leftMin) / float(leftSpan)
   return rightMin + (valueScaled * rightSpan)
 
-def generate_output_image(output_image, params_history, scale_factor, save_progress_path):
-  progress_images = []
+def save_image(data):
+  image, path = data
+  image = Image.fromarray(image, mode="RGB")
+  image.save(path)
 
+class ImageSaver(threading.Thread):
+  def __init__(self):
+    super(ImageSaver, self).__init__(daemon=True)
+
+    self.stopped = multiprocessing.Value(ctypes.c_bool, False)
+    self.data_queue = multiprocessing.Queue(maxsize=400)
+    self.executor = ProcessPoolExecutor(math.ceil(multiprocessing.cpu_count() / 2))
+
+  def put_data(self, image, path):
+    self.data_queue.put((image, path), block=True)
+
+  def end(self):
+    time.sleep(1)
+    self.stopped.value = True
+
+  def get_data(self):
+    data = []
+    while True:
+      try:
+        data.append(self.data_queue.get(block=True, timeout=10))
+      except queue.Empty:
+        break
+    return data
+
+  def run(self) -> None:
+    time.sleep(2)
+
+    while not self.stopped.value:
+      data = self.get_data()
+      if not data:
+        continue
+
+      self.executor.map(save_image, data)
+
+    data = self.get_data()
+    if data:
+      self.executor.map(save_image, data)
+
+    self.executor.shutdown(wait=True)
+
+def generate_output_image(output_image, params_history, scale_factor, save_progress_path):
   index_offset = 0
+  image_saver = None
   if save_progress_path is not None:
+    image_saver = ImageSaver()
+    image_saver.start()
+
     if not os.path.exists(save_progress_path):
       os.mkdir(save_progress_path)
     else:
@@ -193,7 +243,7 @@ def generate_output_image(output_image, params_history, scale_factor, save_progr
     element_params = param[1]
 
     if mode == 0:
-      params_to_scale = 5
+      params_to_scale = 4
     elif mode == 1:
       params_to_scale = 3
     elif mode == 2:
@@ -207,11 +257,14 @@ def generate_output_image(output_image, params_history, scale_factor, save_progr
     output_image, _ = draw_element(*params)
 
     if save_progress_path is not None:
-      image = Image.fromarray(output_image, mode="RGB")
-      if save_progress_path is not None:
-        image.save(f"{save_progress_path}/{idx + index_offset}.png")
+      image_saver.put_data(output_image.copy(), f"{save_progress_path}/{idx + index_offset}.png")
 
-  return Image.fromarray(output_image, mode="RGB"), progress_images
+  if image_saver is not None and image_saver.is_alive():
+    print("Waiting for image saver to finish")
+    image_saver.end()
+    image_saver.join()
+
+  return Image.fromarray(output_image, mode="RGB")
 
 class Worker(threading.Thread):
   def __init__(self, name, min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, process_image, workers, repeats, tries, mode, add_params_callback, progress_image_lock, worker_print_lock):
@@ -233,7 +286,6 @@ class Worker(threading.Thread):
 
     self.workers = workers
 
-    self.executor = None
     self.repeats = repeats
     self.tries = tries
     self.mode = mode
@@ -243,54 +295,55 @@ class Worker(threading.Thread):
     self.worker_print_lock = worker_print_lock
 
     self.__terminated = False
+    self.initialised = False
 
   def terminate(self):
     self.__terminated = True
 
   def run(self) -> None:
-    self.executor = ThreadPoolExecutor(self.workers)
     _indexes = list(range(self.tries))
 
-    while True:
-      repeats = 0
-      mode = self.mode if self.mode is not None else random.randint(0, 5)
-      get_params_function = partial(get_params, self.max_size, self.reference_image, self.process_image, mode, self.min_width, self.max_width, self.min_height, self.max_height, self.min_alpha, self.max_alpha)
-
+    with ThreadPoolExecutor(self.workers) as executor:
       while True:
-        scored_params = list(self.executor.map(get_params_function, _indexes))
-        scored_params.sort(key=lambda x: x[0], reverse=True)
+        repeats = 0
+        mode = self.mode if self.mode is not None else random.randint(0, 5)
+        get_params_function = partial(get_params, self.max_size, self.reference_image, self.process_image, mode, self.min_width, self.max_width, self.min_height, self.max_height, self.min_alpha, self.max_alpha)
 
-        distance_diff = scored_params[0][0]
+        while True:
+          scored_params = list(executor.map(get_params_function, _indexes))
+          scored_params.sort(key=lambda x: x[0], reverse=True)
+          self.initialised = True
 
-        if distance_diff > MIN_DIFF:
-          break
-        else:
-          repeats += 1
-          if repeats >= self.repeats:
+          distance_diff = scored_params[0][0]
+
+          if distance_diff > MIN_DIFF:
             break
+          else:
+            repeats += 1
+            if repeats >= self.repeats:
+              break
+
+          if self.__terminated:
+            break
+
+        if repeats >= self.repeats:
+          self.worker_print_lock.acquire()
+          print(f"[Worker {self.name}] Retries limit reached, ending")
+          self.worker_print_lock.release()
+          break
 
         if self.__terminated:
           break
 
-      if repeats >= self.repeats:
-        self.worker_print_lock.acquire()
-        print(f"[Worker {self.name}] Retries limit reached, ending")
-        self.worker_print_lock.release()
-        break
+        self.progress_image_lock.acquire()
+        params = scored_params[0][1]
+        self.add_params_callback((mode, params))
 
-      if self.__terminated:
-        break
+        params = [params, self.process_image, mode]
+        tmp_process_image, _ = draw_element(*params)
+        np.copyto(self.process_image, tmp_process_image)
+        self.progress_image_lock.release()
 
-      params = scored_params[0][1]
-      self.add_params_callback((mode, params))
-
-      params = [params, self.process_image, mode]
-      self.progress_image_lock.acquire()
-      tmp_process_image, _ = draw_element(*params)
-      np.copyto(self.process_image, tmp_process_image)
-      self.progress_image_lock.release()
-
-    self.executor.shutdown()
     self.worker_print_lock.acquire()
     print(f"[Worker {self.name}] Ended")
     self.worker_print_lock.release()
@@ -348,9 +401,20 @@ class WorkerManager:
     for worker in self.workers:
       worker.start()
 
+  def draw_splits(self, image):
+    for xidx in range(self.width_splits):
+      x1 = width_split_coef * xidx
+      x2 = min(resized_width, width_split_coef * (xidx + 1))
+      for yidx in range(self.height_splits):
+        y1 = height_split_coef * yidx
+        y2 = min(resized_height, height_split_coef * (yidx + 1))
+        idx = xidx * self.height_splits + yidx
+        cv2.rectangle(image, (x1, y1), (x2 - 1, y2 - 1), color=((250, 50, 5) if self.workers[idx].initialised else (10, 150, 250)) if self.workers[idx].is_alive() else (15, 5, 245))
+
   def run(self):
     prog_image = cv2.cvtColor(self.process_image, cv2.COLOR_RGB2BGR)
     cv2.imshow("progress_window", prog_image)
+    cv2.waitKey(1)
 
     self.start_workers()
 
@@ -367,26 +431,20 @@ class WorkerManager:
         self.progress_iterator.set_description(f"Distance: {current_distance}, Max size: {self.max_size}")
 
         prog_image = cv2.cvtColor(self.process_image, cv2.COLOR_RGB2BGR)
-
-        for xidx in range(self.width_splits):
-          x1 = width_split_coef * xidx
-          x2 = min(resized_width, width_split_coef * (xidx + 1))
-          for yidx in range(self.height_splits):
-            y1 = height_split_coef * yidx
-            y2 = min(resized_height, height_split_coef * (yidx + 1))
-            idx = xidx * self.height_splits + yidx
-            cv2.rectangle(prog_image, (x1, y1), (x2 - 1, y2 - 1), color=(250, 50, 5) if self.workers[idx].is_alive() else (15, 5, 245))
+        self.draw_splits(prog_image)
 
         cv2.imshow("progress_window", prog_image)
         cv2.waitKey(100)
+
+      cv2.destroyAllWindows()
     except KeyboardInterrupt:
       print("Interrupted by user")
+
+      cv2.destroyAllWindows()
 
       self.terminate_workers()
       for worker in self.workers:
         worker.join()
-
-    cv2.destroyAllWindows()
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
@@ -406,7 +464,7 @@ if __name__ == '__main__':
   parser.add_argument("--output", "-o", help="Path where to save output image", type=str, required=False)
   parser.add_argument("--progress_output", "-po", help="Path to folder where progress images will be saved", type=str, required=False)
   parser.add_argument("--progress_video", "-pv", help="Path to video of progress (works only with ffmpeg installed and in PATH) (if progress_output is not defined temporary folder with images will be created)", type=str, required=False)
-  parser.add_argument("--progress_video_framerate", "-pvf", help="Framerate of output video (more frames per second -> faster video) (default: 100)", type=int, default=100)
+  parser.add_argument("--progress_video_length", "-pvl", help="Approximate output progress video length in seconds (default 60)", type=int, default=60)
   parser.add_argument("--process_scale_factor", "-psf", help="Scale down factor for generating image (example: 2 will scale image size in both axis by factor of 2)", type=float, default=1)
   parser.add_argument("--output_scale_factor", "-osf", help="Scale factor for output image (same behaviour as process_scale_factor)", type=float, default=1)
   parser.add_argument("--checkpoint", "-ch", help="Checkpoint image path", type=str, required=False)
@@ -424,7 +482,7 @@ if __name__ == '__main__':
     assert os.path.exists(args.checkpoint) and os.path.isfile(args.checkpoint), "Invalid checkpoint file"
   assert args.width_splits >= 1 and args.height_splits >= 1, "Invalid split values"
   assert 1 <= args.min_alpha <= args.max_alpha <= 255, "Invalid element alpha settings"
-  assert args.progress_video_framerate >= 1, "Invalid progress video framerate"
+  assert args.progress_video_length >= 1, "Invalid progress video length"
   assert args.size_decay_coef > 0, "Invalid size decay coefficient"
 
   input_image = Image.open(args.input).convert('RGB')
@@ -468,14 +526,16 @@ if __name__ == '__main__':
   print(f"{len(line_params_history)} elements, Elapsed: {(time.time() - start_time) / 60}mins")
 
   progress_images_path = args.progress_output if args.progress_output is not None else ("tmp" if args.progress_video is not None else None)
-  output_image_object, progress_images = generate_output_image(output_image, line_params_history, output_image.shape[1] / resized_width, progress_images_path)
+  output_image_object = generate_output_image(output_image, line_params_history, output_image.shape[1] / resized_width, progress_images_path)
 
   if args.output is not None:
     output_image_object.save(args.output)
 
   if args.progress_video is not None:
     print("Generating progress video")
-    process = subprocess.Popen(f"ffmpeg -r {args.progress_video_framerate} -f image2 -i {progress_images_path}/%d.png -vcodec libx264 -crf 25 -pix_fmt yuv420p {args.progress_video}", stdout=subprocess.DEVNULL)
+    number_of_frames = len(os.listdir(progress_images_path))
+    framerate = max(1, number_of_frames // args.progress_video_length)
+    process = subprocess.Popen(f"ffmpeg -r {framerate} -f image2 -i {progress_images_path}/%d.png -vcodec libx264 -crf 25 -pix_fmt yuv420p -vf pad='width=ceil(iw/2)*2:height=ceil(ih/2)*2' {args.progress_video}", stdout=subprocess.DEVNULL)
     process.wait()
     if args.progress_output is None:
       shutil.rmtree(progress_images_path, ignore_errors=True)
