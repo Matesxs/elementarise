@@ -17,6 +17,7 @@ import threading
 import multiprocessing
 import ctypes
 import queue
+import signal
 
 MIN_DIFF = 5_000
 
@@ -194,7 +195,6 @@ class ImageSaver(threading.Thread):
 
     self.stopped = multiprocessing.Value(ctypes.c_bool, False)
     self.data_queue = multiprocessing.Queue(maxsize=400)
-    self.executor = ProcessPoolExecutor(math.ceil(multiprocessing.cpu_count() / 2))
 
   def put_data(self, image, path):
     self.data_queue.put((image, path), block=True)
@@ -203,30 +203,32 @@ class ImageSaver(threading.Thread):
     time.sleep(1)
     self.stopped.value = True
 
-  def get_data(self):
+  def get_data(self, limit=True):
     data = []
+    retrieved = 0
     while True:
       try:
         data.append(self.data_queue.get(block=True, timeout=10))
+        retrieved += 1
+        if limit:
+          if retrieved >= 400:
+            break
       except queue.Empty:
         break
     return data
 
   def run(self) -> None:
-    time.sleep(2)
+    with ProcessPoolExecutor(math.ceil(multiprocessing.cpu_count() / 2)) as executor:
+      while not self.stopped.value:
+        data = self.get_data()
+        if not data:
+          continue
 
-    while not self.stopped.value:
-      data = self.get_data()
-      if not data:
-        continue
+        executor.map(save_image, data)
 
-      self.executor.map(save_image, data)
-
-    data = self.get_data()
-    if data:
-      self.executor.map(save_image, data)
-
-    self.executor.shutdown(wait=True)
+      data = self.get_data(limit=False)
+      if data:
+        executor.map(save_image, data)
 
 def generate_output_image(output_image, params_history, scale_factor, save_progress_path):
   index_offset = 0
@@ -239,8 +241,9 @@ def generate_output_image(output_image, params_history, scale_factor, save_progr
       os.mkdir(save_progress_path)
     else:
       files = [pathlib.Path(p).stem for p in os.listdir(save_progress_path)]
-      indexes = [int(f) for f in files if f.isnumeric()]
-      index_offset = max(indexes) + 1
+      if files:
+        indexes = [int(f) for f in files if f.isnumeric()]
+        index_offset = max(indexes) + 1
 
   print("Generating final image")
   for idx, param in tqdm(enumerate(params_history), total=len(params_history)):
@@ -270,6 +273,9 @@ def generate_output_image(output_image, params_history, scale_factor, save_progr
     image_saver.join()
 
   return Image.fromarray(output_image, mode="RGB")
+
+def init_pool():
+  signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 class Worker(threading.Thread):
   def __init__(self, name, min_width, max_width, min_height, max_height, min_alpha, max_alpha, max_size, reference_image, process_image, workers, repeats, tries, mode, add_params_callback, progress_image_lock, worker_print_lock):
@@ -308,47 +314,50 @@ class Worker(threading.Thread):
   def run(self) -> None:
     _indexes = list(range(self.tries))
 
-    with multiprocessing.Pool(self.workers) as executor:
-      while True:
-        repeats = 0
-        mode = self.mode if self.mode is not None else random.randint(0, 5)
-        get_params_function = partial(get_params, self.max_size, self.reference_image, self.process_image, mode, self.min_width, self.max_width, self.min_height, self.max_height, self.min_alpha, self.max_alpha)
-
+    try:
+      with multiprocessing.Pool(self.workers, init_pool) as executor:
         while True:
-          scored_params = list(executor.map(get_params_function, _indexes))
-          scored_params = [param for param in scored_params if param is not None]
-          scored_params.sort(key=lambda x: x[0], reverse=True)
-          self.initialised = True
+          repeats = 0
+          mode = self.mode if self.mode is not None else random.randint(0, 5)
+          get_params_function = partial(get_params, self.max_size, self.reference_image, self.process_image, mode, self.min_width, self.max_width, self.min_height, self.max_height, self.min_alpha, self.max_alpha)
 
-          distance_diff = scored_params[0][0]
+          while True:
+            scored_params = list(executor.map(get_params_function, _indexes))
+            scored_params = [param for param in scored_params if param is not None]
+            scored_params.sort(key=lambda x: x[0], reverse=True)
+            self.initialised = True
 
-          if distance_diff > MIN_DIFF:
-            break
-          else:
-            repeats += 1
-            if repeats >= self.repeats:
+            distance_diff = scored_params[0][0]
+
+            if distance_diff > MIN_DIFF:
               break
+            else:
+              repeats += 1
+              if repeats >= self.repeats:
+                break
+
+            if self.__terminated:
+              break
+
+          if repeats >= self.repeats:
+            self.worker_print_lock.acquire()
+            print(f"[Worker {self.name}] Retries limit reached, ending")
+            self.worker_print_lock.release()
+            break
 
           if self.__terminated:
             break
 
-        if repeats >= self.repeats:
-          self.worker_print_lock.acquire()
-          print(f"[Worker {self.name}] Retries limit reached, ending")
-          self.worker_print_lock.release()
-          break
+          self.progress_image_lock.acquire()
+          params = scored_params[0][1]
+          self.add_params_callback((mode, params))
 
-        if self.__terminated:
-          break
-
-        self.progress_image_lock.acquire()
-        params = scored_params[0][1]
-        self.add_params_callback((mode, params))
-
-        params = [params, self.process_image, mode]
-        tmp_process_image, _ = draw_element(*params)
-        np.copyto(self.process_image, tmp_process_image)
-        self.progress_image_lock.release()
+          params = [params, self.process_image, mode]
+          tmp_process_image, _ = draw_element(*params)
+          np.copyto(self.process_image, tmp_process_image)
+          self.progress_image_lock.release()
+    except KeyboardInterrupt:
+      pass
 
     self.worker_print_lock.acquire()
     print(f"[Worker {self.name}] Ended")
@@ -493,6 +502,7 @@ if __name__ == '__main__':
   processes_to_spawn = args.workers_per_tile * args.width_splits * args.height_splits
   if processes_to_spawn > multiprocessing.cpu_count():
     print(f"Number of processes to spawn ({processes_to_spawn}) is larger than number of processor cores ({multiprocessing.cpu_count()})! Progress distribution can be uneven!")
+  print(f"Number of processes to spawn: {processes_to_spawn}")
 
   input_image = Image.open(args.input).convert('RGB')
   # HxWxCH
