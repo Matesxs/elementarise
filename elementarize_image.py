@@ -8,7 +8,7 @@ import random
 import cv2
 import time
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import shutil
 import subprocess
@@ -158,18 +158,23 @@ def get_window_distances(original_window, output_window, current_window):
   return prev_distance, new_distance
 
 def get_params(max_size, original_image, output_image, mode, min_width, max_width, min_height, max_height, min_alpha, max_alpha, _):
-  params = get_random_element_params(min_width, max_width, min_height, max_height, max_size, min_alpha, max_alpha, mode)
-  complete_params = [params, output_image, mode]
-  tmp_image, bounding_box = draw_element(*complete_params)
-  prev_distance, new_distance = get_window_distances(original_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
-                                                     output_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
-                                                     tmp_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :])
+  try:
+    params = get_random_element_params(min_width, max_width, min_height, max_height, max_size, min_alpha, max_alpha, mode)
+    complete_params = [params, output_image, mode]
+    tmp_image, bounding_box = draw_element(*complete_params)
+    prev_distance, new_distance = get_window_distances(original_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
+                                                       output_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
+                                                       tmp_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :])
 
-  # data = np.array(tmp_image)
-  # cv2.rectangle(data, (bounding_box[0], bounding_box[1]), (bounding_box[2], bounding_box[3]), color=(255, 0, 0))
-  # cv2.imshow("test", data)
-  # cv2.waitKey(0)
-  return prev_distance - new_distance, params
+    # data = np.array(tmp_image)
+    # cv2.rectangle(data, (bounding_box[0], bounding_box[1]), (bounding_box[2], bounding_box[3]), color=(255, 0, 0))
+    # cv2.imshow("test", data)
+    # cv2.waitKey(0)
+    return prev_distance - new_distance, params
+  except KeyboardInterrupt:
+    return None
+  except:
+    return None
 
 @njit(nogil=True)
 def translate(value, leftMin, leftMax, rightMin, rightMax):
@@ -303,7 +308,7 @@ class Worker(threading.Thread):
   def run(self) -> None:
     _indexes = list(range(self.tries))
 
-    with ThreadPoolExecutor(self.workers) as executor:
+    with multiprocessing.Pool(self.workers) as executor:
       while True:
         repeats = 0
         mode = self.mode if self.mode is not None else random.randint(0, 5)
@@ -311,6 +316,7 @@ class Worker(threading.Thread):
 
         while True:
           scored_params = list(executor.map(get_params_function, _indexes))
+          scored_params = [param for param in scored_params if param is not None]
           scored_params.sort(key=lambda x: x[0], reverse=True)
           self.initialised = True
 
@@ -402,13 +408,13 @@ class WorkerManager:
       worker.start()
 
   def draw_splits(self, image):
-    for xidx in range(self.width_splits):
-      x1 = width_split_coef * xidx
-      x2 = min(resized_width, width_split_coef * (xidx + 1))
-      for yidx in range(self.height_splits):
-        y1 = height_split_coef * yidx
-        y2 = min(resized_height, height_split_coef * (yidx + 1))
-        idx = xidx * self.height_splits + yidx
+    for yidx in range(self.height_splits):
+      y1 = height_split_coef * yidx
+      y2 = min(resized_height, height_split_coef * (yidx + 1))
+      for xidx in range(self.width_splits):
+        x1 = width_split_coef * xidx
+        x2 = min(resized_width, width_split_coef * (xidx + 1))
+        idx = xidx + yidx * self.width_splits
         cv2.rectangle(image, (x1, y1), (x2 - 1, y2 - 1), color=((250, 50, 5) if self.workers[idx].initialised else (10, 150, 250)) if self.workers[idx].is_alive() else (15, 5, 245))
 
   def run(self):
@@ -484,6 +490,9 @@ if __name__ == '__main__':
   assert 1 <= args.min_alpha <= args.max_alpha <= 255, "Invalid element alpha settings"
   assert args.progress_video_length >= 1, "Invalid progress video length"
   assert args.size_decay_coef > 0, "Invalid size decay coefficient"
+  processes_to_spawn = args.workers_per_tile * args.width_splits * args.height_splits
+  if processes_to_spawn > multiprocessing.cpu_count():
+    print(f"Number of processes to spawn ({processes_to_spawn}) is larger than number of processor cores ({multiprocessing.cpu_count()})! Progress distribution can be uneven!")
 
   input_image = Image.open(args.input).convert('RGB')
   # HxWxCH
