@@ -164,11 +164,6 @@ def get_params(max_size, original_image, output_image, mode, min_width, max_widt
     prev_distance, new_distance = get_window_distances(original_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
                                                        output_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
                                                        tmp_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :])
-
-    # data = np.array(tmp_image)
-    # cv2.rectangle(data, (bounding_box[0], bounding_box[1]), (bounding_box[2], bounding_box[3]), color=(255, 0, 0))
-    # cv2.imshow("test", data)
-    # cv2.waitKey(0)
     return prev_distance - new_distance, params
   except KeyboardInterrupt:
     return None
