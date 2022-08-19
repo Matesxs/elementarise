@@ -437,7 +437,7 @@ if __name__ == '__main__':
   parser.add_argument("--elements", "-e", help="Number of elements to draw", type=int, default=1000)
   parser.add_argument("--tries", "-t", help="Number of tries for each element", type=int, default=500)
   parser.add_argument("--repeats_limit", "-rl", help="Limit number of repeats per element", type=int, default=20)
-  parser.add_argument("--tile_select_mode", "-tsm", help="Tile select mode changes behaviour of tile selection when multiple of them are present (default: 1)\n0 - random - tiles are selected randomly\n1 - round robin - tiles are selected one after another\n2 - worse first - tiles with worst metrics will get processed first", type=int, default=1)
+  parser.add_argument("--tile_select_mode", "-tsm", help="Tile select mode changes behaviour of tile selection when multiple of them are present (default: 1), 0 - random - tiles are selected randomly, 1 - round robin - tiles are selected one after another, 2 - worse first - tiles with worst metrics will get processed first", type=int, default=1)
   parser.add_argument("--size_multiplier", "-sm", help="Multiplier of size in connection to image (split) dimensions (size dont apply to mode 2)", type=float, default=0.4)
   parser.add_argument("--max_size_minimum", "-maxsm", help="Element size to which will maximum size decay overtime (if not set no decay will happen) (size dont apply to mode 2)", type=int, required=False)
   parser.add_argument("--min_size", "-mins", help="Minimum element size (size dont apply to mode 2)", type=int, default=2)
