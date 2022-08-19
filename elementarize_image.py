@@ -8,7 +8,6 @@ import random
 import cv2
 import time
 from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 import shutil
 import subprocess
@@ -187,7 +186,7 @@ class ImageSaver(threading.Thread):
     super(ImageSaver, self).__init__(daemon=True)
 
     self.stopped = multiprocessing.Value(ctypes.c_bool, False)
-    self.data_queue = multiprocessing.Queue(maxsize=400)
+    self.data_queue = multiprocessing.Queue(maxsize=200)
 
   def put_data(self, image, path):
     self.data_queue.put((image, path), block=True)
@@ -199,19 +198,20 @@ class ImageSaver(threading.Thread):
   def get_data(self, limit=None):
     data = []
     retrieved = 0
+    start_time = time.time()
     while True:
       try:
         data.append(self.data_queue.get(block=True, timeout=10))
         retrieved += 1
         if limit is not None:
-          if retrieved >= limit:
+          if retrieved >= limit or time.time() - start_time > 20:
             break
       except queue.Empty:
         break
     return data
 
   def run(self) -> None:
-    with ProcessPoolExecutor(math.ceil(multiprocessing.cpu_count() / 2)) as executor:
+    with multiprocessing.Pool(math.ceil(multiprocessing.cpu_count() / 2)) as executor:
       while not self.stopped.value:
         data = self.get_data(limit=200)
         if not data:
