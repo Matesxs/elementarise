@@ -5,3 +5,6 @@ tmp/
 *.gif
 *.mp4
 __pycache__/
+build/
+dist/
+elementarise_image.egg-info/

@@ -7,20 +7,20 @@ from functools import partial
 import math
 from tqdm import tqdm
 
-from .metrics import get_total_metric, get_eval_metric
+from .metrics import get_window_metrics, get_process_metric, get_eval_metric
 from .helpers import round_robin_generator, init_pool
 from .utils import translate, draw_element, generate_output_image
 from .param_generation import get_params
-from .definitions import ElementType, TileSelectMode, string_to_tile_select_mode, string_to_element_type
-from .metrics import get_window_metrics
+from .definitions import ElementType, TileSelectMode, string_to_tile_select_mode, string_to_element_type, MetricsMode, string_to_metrics_mode
 
-def process_data(reference_image, output_image, element_type, max_size, min_size, min_width, max_width, min_height, max_height, min_alpha, max_alpha, _):
+def process_data(reference_image:np.ndarray, process_image:np.ndarray, element_type:ElementType, max_size:int, min_size:int, min_width:int, max_width:int, min_height:int, max_height:int, min_alpha:int, max_alpha:int, process_metric_function:typing.Optional[typing.Callable[[np.ndarray, np.ndarray],float]], _) -> typing.Tuple[float, tuple, ElementType]:
   element_type, params = get_params(element_type, min_width, max_width, min_height, max_height, max_size, min_size, min_alpha, max_alpha)
-  complete_params = [output_image, params, element_type]
+  complete_params = [process_image, params, element_type]
   tmp_image, bounding_box = draw_element(*complete_params)
   prev_metric, new_metric = get_window_metrics(reference_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
-                                               output_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
-                                               tmp_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :])
+                                               process_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
+                                               tmp_image[bounding_box[1]:bounding_box[3], bounding_box[0]:bounding_box[2], :],
+                                               process_metric_function)
   return prev_metric - new_metric, params, element_type
 
 class Elementariser:
@@ -28,11 +28,14 @@ class Elementariser:
                process_scale_factor:float=1.0, output_scale_factor:float=1.0,
                num_of_elements:int=2000, batch_size:int=200, num_of_retries:int=20,
                width_divs:int=1, height_divs:int=1,
-               min_alpha:int=1, max_alpha:int=255, max_size_start_coef:float=0.6, max_size_end_coef:float=0.1, max_size_decay_coef:float=1.0, min_size:int=2, element_type:typing.Union[ElementType, str]=ElementType.LINE,
+               min_alpha:int=1, max_alpha:int=255, max_size_start_coef:float=0.4, max_size_end_coef:float=0.1, max_size_decay_coef:float=1.0, min_size:int=2, element_type:typing.Union[ElementType, str]=ElementType.LINE,
                tile_select_mode:typing.Union[TileSelectMode, str]=TileSelectMode.RANDOM,
-               workers:int=1, min_improvement:int=2000,
+               workers:int=1,
                save_progress:bool=False, progress_save_path:str="tmp",
                progress_callback:typing.Optional[typing.Callable[[np.ndarray, float], None]]=None,
+               custom_process_metrics:typing.Optional[typing.Tuple[typing.Callable[[np.ndarray, np.ndarray], float], typing.Union[MetricsMode, str]]]=None,
+               custom_evaluation_metrics:typing.Optional[typing.Tuple[typing.Callable[[np.ndarray, np.ndarray], float], typing.Union[MetricsMode, str]]]=None,
+               min_improvement: int = 2000,
                debug_on_progress_image:bool=False, debug:bool=False, use_tqdm:bool=False, visualise_progress:bool=False):
     assert process_scale_factor > 0, "Invalid process scale factor"
     assert output_scale_factor > 0, "Invalid output scale factor"
@@ -46,6 +49,21 @@ class Elementariser:
       element_type = string_to_element_type(element_type)
     if isinstance(tile_select_mode, str):
       tile_select_mode = string_to_tile_select_mode(tile_select_mode)
+
+    self.process_metrics = get_process_metric
+    self.process_metrics_mode = MetricsMode.MINIMALISE
+    self.eval_metrics = get_eval_metric
+    self.eval_metrics_mode = MetricsMode.MAXIMALISE
+    if custom_process_metrics is not None:
+      self.process_metrics = custom_process_metrics[0]
+      self.process_metrics_mode = custom_process_metrics[1]
+      if isinstance(self.process_metrics_mode, str):
+        self.process_metrics_mode = string_to_metrics_mode(self.process_metrics_mode)
+    if custom_evaluation_metrics is not None:
+      self.eval_metrics = custom_evaluation_metrics[0]
+      self.eval_metrics_mode = custom_evaluation_metrics[1]
+      if isinstance(self.eval_metrics_mode, str):
+        self.eval_metrics_mode = string_to_metrics_mode(self.eval_metrics_mode)
 
     self.progress_callback = progress_callback
 
@@ -106,7 +124,7 @@ class Elementariser:
     self.use_tqdm = use_tqdm
     self.visualise_progress = visualise_progress
 
-    self.current_distance = get_total_metric(self.reference_image, self.process_image)
+    self.current_distance = self.process_metrics(self.reference_image, self.process_image)
 
     for yidx in range(height_divs):
       min_height = self.height_split_coef * yidx
@@ -136,8 +154,8 @@ class Elementariser:
   def get_zone_data(self):
     if len(self.all_zones) > 1:
       if self.tile_select_mode == TileSelectMode.PRIORITY:
-        metrics = np.array([get_eval_metric(self.reference_image[y1:y2, x1:x2, :], self.process_image[y1:y2, x1:x2, :]) for x1, x2, y1, y2 in self.all_zones])
-        selected_index = metrics.argmax()
+        metrics = np.array([self.eval_metrics(self.reference_image[y1:y2, x1:x2, :], self.process_image[y1:y2, x1:x2, :]) for x1, x2, y1, y2 in self.all_zones])
+        selected_index = metrics.argmax() if self.eval_metrics_mode == MetricsMode.MINIMALISE else metrics.argmin()
         zone_data = self.all_zones[selected_index]
       elif self.tile_select_mode == TileSelectMode.ROUND_ROBIN:
         zone_data = self.get_next_zone()
@@ -157,8 +175,16 @@ class Elementariser:
         self.draw_splits(prog_image, last_zone, last_bbox)
 
       if self.visualise_progress:
-        cv2.imshow("progress_window", prog_image)
-        cv2.setWindowTitle("progress_window", f"{progress}/{self.elements}")
+        diff_image = np.abs((self.reference_image - self.process_image)).sum(axis=2) / 3
+        diff_image = cv2.cvtColor(diff_image.astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        self.draw_splits(diff_image, last_zone, last_bbox)
+
+        display_image = np.zeros((prog_image.shape[0], prog_image.shape[1] * 2, prog_image.shape[2]), dtype=np.uint8)
+        display_image[:, :prog_image.shape[1], :] = prog_image
+        display_image[:, prog_image.shape[1]:, :] = diff_image
+
+        cv2.imshow("progress_window", display_image)
+        cv2.setWindowTitle("progress_window", f"{progress}/{self.elements}, Size: {self.min_size}-{self.max_size}")
         cv2.waitKey(1)
 
       if self.progress_callback is not None:
@@ -176,18 +202,18 @@ class Elementariser:
 
       with multiprocessing.Pool(self.workers, init_pool) as executor:
         for iteration in iterator:
-          self.max_size = int(max(float(self.min_size), translate(self.max_size_decay_coef * iteration, 0, self.elements, self.start_max_size, self.end_max_size)))
+          self.max_size = int(max(float(self.end_max_size), translate(self.max_size_decay_coef * iteration, 0, self.elements, self.start_max_size, self.end_max_size)))
 
           zone_data = self.get_zone_data()
 
           min_width, max_width, min_height, max_height = zone_data
-          get_params_function = partial(process_data, self.reference_image, self.process_image, self.element_type, self.max_size, self.min_size, min_width, max_width, min_height, max_height, self.min_alpha, self.max_alpha)
+          get_params_function = partial(process_data, self.reference_image, self.process_image, self.element_type, self.max_size, self.min_size, min_width, max_width, min_height, max_height, self.min_alpha, self.max_alpha, self.process_metrics)
 
           retries = 0
           while True:
             scored_params = executor.map(get_params_function, _indexes)
             scored_params = [param for param in scored_params if param is not None]
-            scored_params.sort(key=lambda x: x[0], reverse=True)
+            scored_params.sort(key=lambda x: x[0], reverse=(True if self.process_metrics_mode == MetricsMode.MINIMALISE else False))
 
             distance_diff = scored_params[0][0]
             is_better = distance_diff > self.min_improvement
@@ -203,6 +229,8 @@ class Elementariser:
                   zone_data = self.get_zone_data()
 
                   self.call_callback(iteration, zone_data)
+                  if isinstance(iterator, tqdm):
+                    iterator.set_description(f"Size: {self.min_size}-{self.max_size}")
                   continue
                 break
 
@@ -219,6 +247,8 @@ class Elementariser:
           self.current_distance -= distance_diff
 
           self.call_callback(iteration, zone_data, bbox)
+          if isinstance(iterator, tqdm):
+            iterator.set_description(f"Size: {self.min_size}-{self.max_size}")
     except KeyboardInterrupt:
       if self.debug:
         print("Interrupted by user")

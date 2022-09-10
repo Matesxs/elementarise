@@ -1,5 +1,12 @@
 import enum
 
+class MetricsMode(enum.Enum):
+  MINIMALISE = 0
+  MAXIMALISE = 1
+
+def string_to_metrics_mode(val:str) -> MetricsMode:
+  return MetricsMode[val.upper()]
+
 class ElementType(enum.Enum):
   LINE = 0
   CIRCLE = 1
