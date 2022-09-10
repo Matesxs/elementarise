@@ -35,7 +35,7 @@ class Elementariser:
                progress_callback:typing.Optional[typing.Callable[[np.ndarray, float], None]]=None,
                custom_process_metrics:typing.Optional[typing.Tuple[typing.Callable[[np.ndarray, np.ndarray], float], typing.Union[MetricsMode, str]]]=None,
                custom_evaluation_metrics:typing.Optional[typing.Tuple[typing.Callable[[np.ndarray, np.ndarray], float], typing.Union[MetricsMode, str]]]=None,
-               min_improvement: int = 2000,
+               min_improvement: int=2000,
                debug_on_progress_image:bool=False, debug:bool=False, use_tqdm:bool=False, visualise_progress:bool=False):
     assert process_scale_factor > 0, "Invalid process scale factor"
     assert output_scale_factor > 0, "Invalid output scale factor"
