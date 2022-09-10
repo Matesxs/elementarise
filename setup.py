@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 def get_version() -> str:
-  rel_path = "elementarise_image/__init__.py"
+  rel_path = "elementarise/__init__.py"
   with open(rel_path, "r") as fp:
     for line in fp.read().splitlines():
       if line.startswith("__version__"):
@@ -13,12 +13,12 @@ with open('requirements.txt') as f:
   requirements = f.read().splitlines()
 
 setup(
-  name='elementarise_image',
+  name='elementarise',
   version=get_version(),
   author='Martin Douša',
   author_email='martindousa186@gmail.com',
   packages=find_packages(),
-  url='https://github.com/Matesxs/elementarise_image',
+  url='https://github.com/Matesxs/elementarise',
   license='MIT',
   classifiers=[
     "Development Status :: 5 - Production/Stable",

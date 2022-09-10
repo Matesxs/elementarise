@@ -4,12 +4,12 @@
 Library for generating images from basic shapes.
 
 ### Example
-![o1](https://github.com/Matesxs/elementarise_image/blob/master/media/cat.jpg?raw=true "Original")
-![g1](https://github.com/Matesxs/elementarise_image/blob/master/media/cat_result.png?raw=true "Generated")  
-![o2](https://github.com/Matesxs/elementarise_image/blob/master/media/eevee.png?raw=true "Original")
-![g2](https://github.com/Matesxs/elementarise_image/blob/master/media/eevee_result.png?raw=true "Generated")  
-![o3](https://github.com/Matesxs/elementarise_image/blob/master/media/portal.png?raw=true "Original")
-![g3](https://github.com/Matesxs/elementarise_image/blob/master/media/portal_result.png?raw=true "Generated")
+![o1](https://github.com/Matesxs/elementarise/blob/master/media/cat.jpg?raw=true "Original")
+![g1](https://github.com/Matesxs/elementarise/blob/master/media/cat_result.png?raw=true "Generated")  
+![o2](https://github.com/Matesxs/elementarise/blob/master/media/eevee.png?raw=true "Original")
+![g2](https://github.com/Matesxs/elementarise/blob/master/media/eevee_result.png?raw=true "Generated")  
+![o3](https://github.com/Matesxs/elementarise/blob/master/media/portal.png?raw=true "Original")
+![g3](https://github.com/Matesxs/elementarise/blob/master/media/portal_result.png?raw=true "Generated")
 
 
 ## How it works
@@ -19,7 +19,7 @@ The library is guessing parameters of selected element and placing it on process
 ## Setup
 ### Instalation
 ```
-pip install elementarise_image
+pip install elementarise
 ```
 
 ### Development
@@ -65,8 +65,9 @@ Elementariser(
 ```
 
 #### Example use
+
 ```python
-from elementarise_image import Elementariser, ElementType
+from elementarise import Elementariser, ElementType
 from PIL import Image
 import numpy as np
 
@@ -92,7 +93,7 @@ Image.fromarray(reference_image, mode="RGB").save("result.png")
 
 ### Script
 ```
-python -m elementarise_image --help
+python -m elementarise --help
 
 usage: __main__.py [-h] --input INPUT --output OUTPUT [--checkpoint CHECKPOINT] [--elements ELEMENTS]
                    [--batch_size BATCH_SIZE] [--tries TRIES] [--element_type ELEMENT_TYPE] [--min_alpha MIN_ALPHA]
