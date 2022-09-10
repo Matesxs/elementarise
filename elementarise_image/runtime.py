@@ -24,19 +24,68 @@ def process_data(reference_image:np.ndarray, process_image:np.ndarray, element_t
   return prev_metric - new_metric, params, element_type
 
 class Elementariser:
-  def __init__(self, reference_image:np.ndarray, checkpoint_image:typing.Optional[np.ndarray]=None,
-               process_scale_factor:float=1.0, output_scale_factor:float=1.0,
-               num_of_elements:int=2000, batch_size:int=200, num_of_retries:int=20,
-               width_divs:int=1, height_divs:int=1,
-               min_alpha:int=1, max_alpha:int=255, max_size_start_coef:float=0.4, max_size_end_coef:float=0.1, max_size_decay_coef:float=1.0, min_size:int=2, element_type:typing.Union[ElementType, str]=ElementType.LINE,
+  def __init__(self,
+               reference_image:np.ndarray,
+               checkpoint_image:typing.Optional[np.ndarray]=None,
+               process_scale_factor:float=1.0,
+               output_scale_factor:float=1.0,
+               num_of_elements:int=2000,
+               batch_size:int=200,
+               num_of_retries:int=20,
+               width_divs:int=1,
+               height_divs:int=1,
+               min_alpha:int=1,
+               max_alpha:int=255,
+               max_size_start_coef:float=0.4,
+               max_size_end_coef:float=0.1,
+               max_size_decay_coef:float=1.0,
+               min_size:int=2,
+               element_type:typing.Union[ElementType, str]=ElementType.LINE,
                tile_select_mode:typing.Union[TileSelectMode, str]=TileSelectMode.RANDOM,
                workers:int=1,
-               save_progress:bool=False, progress_save_path:str="tmp",
+               save_progress:bool=False,
+               progress_save_path:str="tmp",
                progress_callback:typing.Optional[typing.Callable[[np.ndarray, float], None]]=None,
                custom_process_metrics:typing.Optional[typing.Tuple[typing.Callable[[np.ndarray, np.ndarray], float], typing.Union[MetricsMode, str]]]=None,
                custom_evaluation_metrics:typing.Optional[typing.Tuple[typing.Callable[[np.ndarray, np.ndarray], float], typing.Union[MetricsMode, str]]]=None,
                min_improvement: int=2000,
-               debug_on_progress_image:bool=False, debug:bool=False, use_tqdm:bool=False, visualise_progress:bool=False):
+               debug_on_progress_image:bool=False,
+               debug:bool=False,
+               use_tqdm:bool=False,
+               visualise_progress:bool=False):
+    """
+    :param reference_image: Reference image
+    :param checkpoint_image: Checkpoint image
+    :param process_scale_factor: Scale of processing image
+    :param output_scale_factor: Scale of output image
+    :param num_of_elements: Number of elements to draw
+    :param batch_size: Number of test elements in epoch
+    :param num_of_retries: Limit number of tries per element
+    :param width_divs: Number of divisions per width
+    :param height_divs: Number of divisions per height
+    :param min_alpha: Minimal alpha value of element
+    :param max_alpha: Maxmimum alpha value of element
+    :param max_size_start_coef: Maximum element size start coef
+    :param max_size_end_coef: Maximum element size final coef
+    :param max_size_decay_coef: Maximum element size decay coef
+    :param min_size: Minimum element size
+    :param element_type: Element used for recreating reference image
+    :param tile_select_mode: Tile select mode changes behaviour of tile selection when multiple of them are present
+    :param workers: Number of workers for generating elements
+    :param save_progress: Store progress of generation
+    :param progress_save_path: Path to folder where progress imagis will be saved
+    :param progress_callback: Function that will be called on each each progress step
+    :param custom_process_metrics: Custom metrics function for generating image
+    :param custom_evaluation_metrics: Custom metrics function for evaluation of progress image (used for priory mode)
+    :param min_improvement: Minimal improvement of metrics for adding new element
+    :param debug_on_progress_image: Draw progress details on progress image
+    :param debug: Print debug
+    :param use_tqdm: Show progress using tqdm
+    :param visualise_progress: Show progress image using cv2
+
+    Elementariser for reference image
+    """
+
     assert process_scale_factor > 0, "Invalid process scale factor"
     assert output_scale_factor > 0, "Invalid output scale factor"
     assert width_divs >= 1 and height_divs >= 1, "Invalid image divisions"
@@ -136,7 +185,7 @@ class Elementariser:
 
     self.get_next_zone = round_robin_generator(self.all_zones.copy())
 
-  def draw_splits(self, image, last_zone=None, last_bbox=None):
+  def __draw_splits(self, image, last_zone=None, last_bbox=None):
     for yidx in range(self.height_splits):
       y1 = self.height_split_coef * yidx
       y2 = min(self.height, self.height_split_coef * (yidx + 1))
@@ -151,7 +200,7 @@ class Elementariser:
     if last_bbox is not None:
       cv2.rectangle(image, (last_bbox[0], last_bbox[1]), (last_bbox[2], last_bbox[3]), color=(240, 190, 15))
 
-  def get_zone_data(self):
+  def __get_zone_data(self):
     if len(self.all_zones) > 1:
       if self.tile_select_mode == TileSelectMode.PRIORITY:
         metrics = np.array([self.eval_metrics(self.reference_image[y1:y2, x1:x2, :], self.process_image[y1:y2, x1:x2, :]) for x1, x2, y1, y2 in self.all_zones])
@@ -170,16 +219,16 @@ class Elementariser:
 
     return zone_data
 
-  def call_callback(self, progress:int, last_zone=None, last_bbox=None):
+  def __call_callback(self, progress:int, last_zone=None, last_bbox=None):
     if self.progress_callback is not None or self.visualise_progress:
       prog_image = cv2.cvtColor(self.process_image, cv2.COLOR_RGB2BGR)
       if self.debug_on_progress_image:
-        self.draw_splits(prog_image, last_zone, last_bbox)
+        self.__draw_splits(prog_image, last_zone, last_bbox)
 
       if self.visualise_progress:
         diff_image = np.abs((self.reference_image - self.process_image)).sum(axis=2) / 3
         diff_image = cv2.cvtColor(diff_image.astype(np.uint8), cv2.COLOR_GRAY2BGR)
-        self.draw_splits(diff_image, last_zone, last_bbox)
+        self.__draw_splits(diff_image, last_zone, last_bbox)
 
         display_image = np.zeros((prog_image.shape[0], prog_image.shape[1] * 2, prog_image.shape[2]), dtype=np.uint8)
         display_image[:, :prog_image.shape[1], :] = prog_image
@@ -193,12 +242,16 @@ class Elementariser:
         self.progress_callback(cv2.cvtColor(prog_image, cv2.COLOR_BGR2RGB), progress / self.elements)
 
   def run(self) -> np.ndarray:
+    """
+    :return: Final image
+    """
+
     param_store = []
 
     try:
       _indexes = list(range(self.batch_size))
 
-      self.call_callback(0)
+      self.__call_callback(0)
 
       iterator = range(self.elements) if not self.use_tqdm else tqdm(range(self.elements), unit="element")
 
@@ -206,7 +259,7 @@ class Elementariser:
         for iteration in iterator:
           self.max_size = int(max(float(self.end_max_size), translate(self.max_size_decay_coef * iteration, 0, self.elements, self.start_max_size, self.end_max_size)))
 
-          zone_data = self.get_zone_data()
+          zone_data = self.__get_zone_data()
 
           min_width, max_width, min_height, max_height = zone_data
           get_params_function = partial(process_data, self.reference_image, self.process_image, self.element_type, self.max_size, self.min_size, min_width, max_width, min_height, max_height, self.min_alpha, self.max_alpha, self.process_metrics)
@@ -228,12 +281,12 @@ class Elementariser:
                 if len(self.all_zones) > 1:
                   retries = 0
                   self.all_zones.remove(zone_data)
-                  zone_data = self.get_zone_data()
+                  zone_data = self.__get_zone_data()
 
                   min_width, max_width, min_height, max_height = zone_data
                   get_params_function = partial(process_data, self.reference_image, self.process_image, self.element_type, self.max_size, self.min_size, min_width, max_width, min_height, max_height, self.min_alpha, self.max_alpha, self.process_metrics)
 
-                  self.call_callback(iteration, zone_data)
+                  self.__call_callback(iteration, zone_data)
                   if isinstance(iterator, tqdm):
                     iterator.set_description(f"Size: {self.min_size}-{self.max_size}")
                   continue
@@ -251,7 +304,7 @@ class Elementariser:
 
           self.current_distance -= distance_diff
 
-          self.call_callback(iteration, zone_data, bbox)
+          self.__call_callback(iteration, zone_data, bbox)
           if isinstance(iterator, tqdm):
             iterator.set_description(f"Size: {self.min_size}-{self.max_size}")
     except KeyboardInterrupt:
@@ -259,7 +312,7 @@ class Elementariser:
         print("Interrupted by user")
       pass
 
-    self.call_callback(self.elements)
+    self.__call_callback(self.elements)
     if self.visualise_progress:
       cv2.destroyWindow("progress_window")
 

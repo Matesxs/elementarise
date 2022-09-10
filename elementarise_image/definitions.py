@@ -1,6 +1,9 @@
 import enum
 
 class MetricsMode(enum.Enum):
+  """
+  Mode for metrics improvement
+  """
   MINIMALISE = 0
   MAXIMALISE = 1
 
@@ -8,6 +11,9 @@ def string_to_metrics_mode(val:str) -> MetricsMode:
   return MetricsMode[val.upper()]
 
 class ElementType(enum.Enum):
+  """
+  Element selector
+  """
   LINE = 0
   CIRCLE = 1
   TRIANGLE = 2
@@ -21,6 +27,9 @@ def string_to_element_type(val:str) -> ElementType:
   return ElementType[val.upper()]
 
 class TileSelectMode(enum.Enum):
+  """
+  Tile select mode
+  """
   RANDOM = 0
   ROUND_ROBIN = 1
   PRIORITY = 2
