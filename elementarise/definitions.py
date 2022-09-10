@@ -34,6 +34,7 @@ class TileSelectMode(enum.Enum):
   ROUND_ROBIN = 1
   PRIORITY = 2
   ONE_BY_ONE = 3
+  TARGET = 4
 
 def string_to_tile_select_mode(val:str) -> TileSelectMode:
   return TileSelectMode[val.upper()]

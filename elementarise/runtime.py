@@ -42,6 +42,7 @@ class Elementariser:
                min_size:int=2,
                element_type:typing.Union[ElementType, str]=ElementType.LINE,
                tile_select_mode:typing.Union[TileSelectMode, str]=TileSelectMode.RANDOM,
+               tile_target:typing.Optional[typing.Tuple[int, int]]=None,
                workers:int=1,
                save_progress:bool=False,
                progress_save_path:str="tmp",
@@ -71,6 +72,7 @@ class Elementariser:
     :param min_size: Minimum element size
     :param element_type: Element used for recreating reference image
     :param tile_select_mode: Tile select mode changes behaviour of tile selection when multiple of them are present
+    :param tile_target: Target tile for TARGET tile select mode
     :param workers: Number of workers for generating elements
     :param save_progress: Store progress of generation
     :param progress_save_path: Path to folder where progress imagis will be saved
@@ -93,6 +95,9 @@ class Elementariser:
     assert 0 < max_size_start_coef >= max_size_end_coef > 0 and min_size >= 1, "Invalid size settings"
     assert workers >= 1, "Invalid number of workers"
     assert min_improvement >= 0, "Invalid minimal improvement settings, improvement need to be >= 0"
+    if tile_select_mode == TileSelectMode.TARGET:
+      assert tile_target is not None, "Tile target not set"
+      assert 0 <= tile_target[0] < width_divs and 0 <= tile_target[1] < height_divs, "Invalid tile target"
 
     if isinstance(element_type, str):
       element_type = string_to_element_type(element_type)
@@ -165,6 +170,7 @@ class Elementariser:
     self.batch_size = batch_size
     self.num_of_retries = num_of_retries
     self.tile_select_mode = tile_select_mode
+    self.tile_target = tile_target
     self.element_type = element_type
     self.min_improvement = min_improvement
 
@@ -212,6 +218,8 @@ class Elementariser:
           zone_data = self.get_next_zone()
       elif self.tile_select_mode == TileSelectMode.ONE_BY_ONE:
         zone_data = self.all_zones[0]
+      elif self.tile_select_mode == TileSelectMode.TARGET:
+        zone_data = (self.width_split_coef * self.tile_target[0], self.width_split_coef * (self.tile_target[0] + 1), self.height_split_coef * self.tile_target[1], self.height_split_coef * (self.tile_target[1] + 1))
       else:
         zone_data = random.choice(self.all_zones)
     else:

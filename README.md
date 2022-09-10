@@ -50,6 +50,7 @@ Elementariser(
   min_size:int=2,
   element_type:typing.Union[ElementType, str]=ElementType.LINE,
   tile_select_mode:typing.Union[TileSelectMode, str]=TileSelectMode.RANDOM,
+  tile_target:typing.Optional[typing.Tuple[int, int]]=None,
   workers:int=1,
   save_progress:bool=False,
   progress_save_path:str="tmp",
@@ -95,13 +96,11 @@ Image.fromarray(reference_image, mode="RGB").save("result.png")
 ```
 python -m elementarise --help
 
-usage: __main__.py [-h] --input INPUT --output OUTPUT [--checkpoint CHECKPOINT] [--elements ELEMENTS]
-                   [--batch_size BATCH_SIZE] [--tries TRIES] [--element_type ELEMENT_TYPE] [--min_alpha MIN_ALPHA]
-                   [--max_alpha MAX_ALPHA] [--max_size_start_coef MAX_SIZE_START_COEF]
-                   [--max_size_end_coef MAX_SIZE_END_COEF] [--max_size_decay_coef MAX_SIZE_DECAY_COEF]
-                   [--min_size MIN_SIZE] [--tile_select_mode TILE_SELECT_MODE]
-                   [--process_scale_factor PROCESS_SCALE_FACTOR] [--output_scale_factor OUTPUT_SCALE_FACTOR]
-                   [--width_splits WIDTH_SPLITS] [--height_splits HEIGHT_SPLITS] [--workers WORKERS]
+usage: __main__.py [-h] --input INPUT --output OUTPUT [--checkpoint CHECKPOINT] [--elements ELEMENTS] [--batch_size BATCH_SIZE] [--tries TRIES]
+                   [--element_type ELEMENT_TYPE] [--min_alpha MIN_ALPHA] [--max_alpha MAX_ALPHA] [--max_size_start_coef MAX_SIZE_START_COEF]
+                   [--max_size_end_coef MAX_SIZE_END_COEF] [--max_size_decay_coef MAX_SIZE_DECAY_COEF] [--min_size MIN_SIZE]
+                   [--tile_select_mode TILE_SELECT_MODE] [--target_tile TARGET_TILE] [--process_scale_factor PROCESS_SCALE_FACTOR]
+                   [--output_scale_factor OUTPUT_SCALE_FACTOR] [--width_splits WIDTH_SPLITS] [--height_splits HEIGHT_SPLITS] [--workers WORKERS]
                    [--disable_visuals] [--save_progress] [--progress_folder PROGRESS_FOLDER]
 
 options:
@@ -119,8 +118,7 @@ options:
   --tries TRIES, -t TRIES
                         Limit number of repeats per element (default: 20)
   --element_type ELEMENT_TYPE, -et ELEMENT_TYPE
-                        Element used for recreating reference image (default: line), line, circle, triangle, square,
-                        pentagon, hexagon, octagon, random
+                        Element used for recreating reference image (default: line), line, circle, triangle, square, pentagon, hexagon, octagon, random
   --min_alpha MIN_ALPHA
                         Minimal alpha value (default: 1)
   --max_alpha MAX_ALPHA
@@ -133,18 +131,18 @@ options:
                         Maximum size decay coef (multiplier for size translation) (default: 1)
   --min_size MIN_SIZE   Minimum size (default: 2)
   --tile_select_mode TILE_SELECT_MODE, -tsm TILE_SELECT_MODE
-                        Tile select mode changes behaviour of tile selection when multiple of them are present
-                        (default: random), random - tiles are selected randomly, round_robin - tiles are selected one
-                        after another, priority - tiles with worst metrics will get processed first, one_by_one -
-                        tiles will be completed one after another (not good for generating from start)
+                        Tile select mode changes behaviour of tile selection when multiple of them are present (default: random), random - tiles are
+                        selected randomly, round_robin - tiles are selected one after another, priority - tiles with worst metrics will get processed first,
+                        one_by_one - tiles will be completed one after another (not good for generating from start), target - target specific tile for
+                        processing
+  --target_tile TARGET_TILE
+                        Tile indexes for target tile select mode
   --process_scale_factor PROCESS_SCALE_FACTOR, -psf PROCESS_SCALE_FACTOR
-                        Scale down factor for generating image (example: 2 will scale image size in both axis by
-                        factor of 2)
+                        Scale down factor for generating image (example: 2 will scale image size in both axis by factor of 2)
   --output_scale_factor OUTPUT_SCALE_FACTOR, -osf OUTPUT_SCALE_FACTOR
                         Scale factor for output image (same behaviour as process_scale_factor)
   --width_splits WIDTH_SPLITS, -ws WIDTH_SPLITS
-                        Number of width splits for generating elements in smaller more specific areas (1 = no splits -
-                        default)
+                        Number of width splits for generating elements in smaller more specific areas (1 = no splits - default)
   --height_splits HEIGHT_SPLITS, -hs HEIGHT_SPLITS
                         Same as width splits only for height
   --workers WORKERS, -w WORKERS
