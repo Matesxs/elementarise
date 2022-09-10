@@ -7,6 +7,6 @@ tmp/
 __pycache__/
 build/
 dist/
-elementarise_image.egg-info/
+elementarise.egg-info/
 requirements_dev.txt
 !media/*
