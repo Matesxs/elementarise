@@ -1,4 +1,4 @@
 from .runtime import Elementariser
 from .definitions import ElementType, TileSelectMode, MetricsMode
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
