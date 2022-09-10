@@ -8,3 +8,5 @@ __pycache__/
 build/
 dist/
 elementarise_image.egg-info/
+requirements_dev.txt
+!media/*

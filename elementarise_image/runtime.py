@@ -161,6 +161,8 @@ class Elementariser:
         zone_data = self.get_next_zone()
         while zone_data not in self.all_zones:
           zone_data = self.get_next_zone()
+      elif self.tile_select_mode == TileSelectMode.ONE_BY_ONE:
+        zone_data = self.all_zones[0]
       else:
         zone_data = random.choice(self.all_zones)
     else:
@@ -227,6 +229,9 @@ class Elementariser:
                   retries = 0
                   self.all_zones.remove(zone_data)
                   zone_data = self.get_zone_data()
+
+                  min_width, max_width, min_height, max_height = zone_data
+                  get_params_function = partial(process_data, self.reference_image, self.process_image, self.element_type, self.max_size, self.min_size, min_width, max_width, min_height, max_height, self.min_alpha, self.max_alpha, self.process_metrics)
 
                   self.call_callback(iteration, zone_data)
                   if isinstance(iterator, tqdm):

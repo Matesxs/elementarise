@@ -39,7 +39,7 @@ def get_symmetrical_polygon_params(min_width, max_width, min_height, max_height,
 
 __mode_switcher = {
   ElementType.LINE: get_line_params,
-  ElementType.CIRCLE: get_line_params,
+  ElementType.CIRCLE: get_circle_params,
   ElementType.TRIANGLE: get_symmetrical_polygon_params,
   ElementType.SQUARE: get_symmetrical_polygon_params,
   ElementType.PENTAGON: get_symmetrical_polygon_params,

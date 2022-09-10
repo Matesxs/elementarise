@@ -19,12 +19,15 @@ parser.add_argument("--max_size_start_coef", help="Maximum size start coef (defa
 parser.add_argument("--max_size_end_coef", help="Maximum size final coef (default: 0.1)", type=float, default=0.1)
 parser.add_argument("--max_size_decay_coef", help="Maximum size decay coef (multiplier for size translation) (default: 1)", type=float, default=1.0)
 parser.add_argument("--min_size", help="Minimum size (default: 2)", type=int, default=2)
-parser.add_argument("--tile_select_mode", "-tsm", help="Tile select mode changes behaviour of tile selection when multiple of them are present (default: random), random - tiles are selected randomly, round_robin - tiles are selected one after another, priority - tiles with worst metrics will get processed first", type=str, default="random")
+parser.add_argument("--tile_select_mode", "-tsm", help="Tile select mode changes behaviour of tile selection when multiple of them are present (default: random), random - tiles are selected randomly, round_robin - tiles are selected one after another, priority - tiles with worst metrics will get processed first, one_by_one - tiles will be completed one after another (not good for generating from start)", type=str, default="random")
 parser.add_argument("--process_scale_factor", "-psf", help="Scale down factor for generating image (example: 2 will scale image size in both axis by factor of 2)", type=float, default=1)
 parser.add_argument("--output_scale_factor", "-osf", help="Scale factor for output image (same behaviour as process_scale_factor)", type=float, default=1)
 parser.add_argument("--width_splits", "-ws", help="Number of width splits for generating elements in smaller more specific areas (1 = no splits - default)", type=int, default=1)
 parser.add_argument("--height_splits", "-hs", help="Same as width splits only for height", type=int, default=1)
 parser.add_argument("--workers", "-w", help="Number of workers", type=int, default=2)
+parser.add_argument("--disable_visuals", action="store_false", help="Disable progress image output")
+parser.add_argument("--save_progress", action="store_true", help="Store progress of generation")
+parser.add_argument("--progress_folder", help="Path to folder where progress imagis will be saved (default: tmp)", type=str, default="tmp")
 
 args = parser.parse_args()
 
@@ -44,7 +47,8 @@ elementariser = Elementariser(input_image, checkpoint_image,
                               args.max_size_start_coef, args.max_size_end_coef, args.max_size_decay_coef, args.min_size,
                               element_type=args.element_type, tile_select_mode=args.tile_select_mode,
                               workers=args.workers,
-                              debug=True, debug_on_progress_image=True, use_tqdm=True, visualise_progress=True)
+                              debug=True, debug_on_progress_image=True, use_tqdm=True, visualise_progress=args.disable_visuals,
+                              progress_save_path=args.progress_folder, save_progress=args.save_progress)
 
 final_image = elementariser.run()
 final_image = Image.fromarray(final_image, mode="RGB")
