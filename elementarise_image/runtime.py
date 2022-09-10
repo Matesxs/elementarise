@@ -86,13 +86,13 @@ class Elementariser:
     Elementariser for reference image
     """
 
-    assert process_scale_factor > 0, "Invalid process scale factor"
-    assert output_scale_factor > 0, "Invalid output scale factor"
-    assert width_divs >= 1 and height_divs >= 1, "Invalid image divisions"
-    assert 1 <= min_alpha <= 255 and 1 <= max_alpha <= 255 and min_alpha <= max_alpha, "Invalid alpha settings"
+    assert process_scale_factor > 0, "Invalid process scale factor, it should be larger than 0"
+    assert output_scale_factor > 0, "Invalid output scale factor, it should be larger than 0"
+    assert width_divs >= 1 and height_divs >= 1, "Invalid image divisions, divisions should be >= 1"
+    assert 1 <= min_alpha <= 255 and 1 <= max_alpha <= 255 and min_alpha <= max_alpha, "Invalid alpha settings, alpha value can be in range 1 - 255 and min alpha need to be smaller or equal to max alpha"
     assert 0 < max_size_start_coef >= max_size_end_coef > 0 and min_size >= 1, "Invalid size settings"
     assert workers >= 1, "Invalid number of workers"
-    assert min_improvement >= 0, "Invalid minimal improvement settings"
+    assert min_improvement >= 0, "Invalid minimal improvement settings, improvement need to be >= 0"
 
     if isinstance(element_type, str):
       element_type = string_to_element_type(element_type)
@@ -271,7 +271,7 @@ class Elementariser:
             scored_params.sort(key=lambda x: x[0], reverse=(True if self.process_metrics_mode == MetricsMode.MINIMALISE else False))
 
             distance_diff = scored_params[0][0]
-            is_better = distance_diff > self.min_improvement
+            is_better = (distance_diff >= self.min_improvement) if self.process_metrics_mode == MetricsMode.MINIMALISE else (distance_diff <= self.min_improvement)
 
             if is_better:
               break
