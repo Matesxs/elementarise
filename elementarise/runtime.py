@@ -179,6 +179,8 @@ class Elementariser:
     self.use_tqdm = use_tqdm
     self.visualise_progress = visualise_progress
 
+    self.interrupted = False
+
     self.current_distance = self.process_metrics(self.reference_image, self.process_image)
 
     for yidx in range(height_divs):
@@ -262,7 +264,7 @@ class Elementariser:
     """
 
     param_store = []
-    iteration = 0
+    elements = 0
 
     try:
       _indexes = list(range(self.batch_size))
@@ -317,6 +319,7 @@ class Elementariser:
 
           params = [self.process_image, params, element_type]
           self.process_image, bbox = draw_element(*params)
+          elements += 1
 
           self.current_distance -= distance_diff
 
@@ -324,6 +327,7 @@ class Elementariser:
           if isinstance(iterator, tqdm):
             iterator.set_description(f"Size: {self.min_size}-{self.max_size}")
     except KeyboardInterrupt:
+      self.interrupted = True
       if self.debug:
         print("Interrupted by user")
       pass
@@ -332,16 +336,16 @@ class Elementariser:
     if self.visualise_progress:
       cv2.destroyWindow("progress_window")
 
-    return generate_output_image(self.output_image, param_store, self.output_image.shape[1] / self.width, self.save_progress, self.progress_save_path, use_tqdm=self.use_tqdm, debug=self.debug), iteration + 1
+    return generate_output_image(self.output_image, param_store, self.output_image.shape[1] / self.width, self.save_progress, self.progress_save_path, use_tqdm=self.use_tqdm, debug=self.debug), elements
 
 class AutoElementariser:
   def __init__(self,
                reference_image: np.ndarray,
                checkpoint_image: typing.Optional[np.ndarray] = None,
                output_scale_factor: float = 1.0,
-               num_of_elements: int = 2000,
+               num_of_elements: int = 5000,
                batch_size: int = 200,
-               num_of_retries: int = 20,
+               num_of_retries: int = 50,
                element_type:typing.Union[ElementType, str]=ElementType.LINE,
                workers: int = 1,
                save_progress: bool = False,
@@ -417,7 +421,7 @@ class AutoElementariser:
 
     all_generated_elements = 0
 
-    for scale, divs in zip([0.125, 0.25, 0.5, 1], [2, 2, 4, 8]):
+    for scale, divs in zip([0.125, 0.25, 0.5, 1], [2, 3, 6, 12]):
       elementariser = Elementariser(self.reference_image,
                                     self.checkpoint_image,
                                     scale,
@@ -441,7 +445,7 @@ class AutoElementariser:
       self.checkpoint_image, generated_elements = elementariser.run()
       all_generated_elements += generated_elements
       self.num_of_elements -= generated_elements
-      if self.num_of_elements <= 0:
+      if self.num_of_elements <= 0 or elementariser.interrupted:
         break
 
     return self.checkpoint_image, all_generated_elements

@@ -3,7 +3,7 @@ from PIL import Image
 import numpy as np
 import os
 
-from .runtime import Elementariser
+from .runtime import Elementariser, AutoElementariser
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--input", "-i", help="Path to input image", type=str, required=True)
@@ -29,6 +29,7 @@ parser.add_argument("--workers", "-w", help="Number of workers", type=int, defau
 parser.add_argument("--disable_visuals", action="store_false", help="Disable progress image output")
 parser.add_argument("--save_progress", action="store_true", help="Store progress of generation")
 parser.add_argument("--progress_folder", help="Path to folder where progress imagis will be saved (default: tmp)", type=str, default="tmp")
+parser.add_argument("--automatic", action="store_true", help="Use automatic elementariser (some arguments will not be used)")
 
 args = parser.parse_args()
 
@@ -45,16 +46,25 @@ if args.checkpoint is not None:
   assert os.path.exists(args.checkpoint) and os.path.isfile(args.checkpoint), "Invalid checkpoint file"
   checkpoint_image = np.array(Image.open(args.checkpoint).convert('RGB'))
 
-elementariser = Elementariser(input_image, checkpoint_image,
-                              args.process_scale_factor, args.output_scale_factor,
-                              args.elements, args.batch_size, args.tries,
-                              args.width_splits, args.height_splits,
-                              args.min_alpha, args.max_alpha,
-                              args.max_size_start_coef, args.max_size_end_coef, args.max_size_decay_coef, args.min_size,
-                              element_type=args.element_type, tile_select_mode=args.tile_select_mode, tile_target=tile_target,
-                              workers=args.workers,
-                              debug=True, debug_on_progress_image=True, use_tqdm=True, visualise_progress=args.disable_visuals,
-                              progress_save_path=args.progress_folder, save_progress=args.save_progress)
+if args.automatic:
+  elementariser = AutoElementariser(input_image, checkpoint_image,
+                                    args.output_scale_factor,
+                                    args.elements, args.batch_size, args.tries,
+                                    element_type=args.element_type,
+                                    workers=args.workers,
+                                    debug=True, debug_on_progress_image=True, use_tqdm=True, visualise_progress=args.disable_visuals,
+                                    progress_save_path=args.progress_folder, save_progress=args.save_progress)
+else:
+  elementariser = Elementariser(input_image, checkpoint_image,
+                                args.process_scale_factor, args.output_scale_factor,
+                                args.elements, args.batch_size, args.tries,
+                                args.width_splits, args.height_splits,
+                                args.min_alpha, args.max_alpha,
+                                args.max_size_start_coef, args.max_size_end_coef, args.max_size_decay_coef, args.min_size,
+                                element_type=args.element_type, tile_select_mode=args.tile_select_mode, tile_target=tile_target,
+                                workers=args.workers,
+                                debug=True, debug_on_progress_image=True, use_tqdm=True, visualise_progress=args.disable_visuals,
+                                progress_save_path=args.progress_folder, save_progress=args.save_progress)
 
 final_image, _ = elementariser.run()
 final_image = Image.fromarray(final_image, mode="RGB")
