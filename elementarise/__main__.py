@@ -56,6 +56,6 @@ elementariser = Elementariser(input_image, checkpoint_image,
                               debug=True, debug_on_progress_image=True, use_tqdm=True, visualise_progress=args.disable_visuals,
                               progress_save_path=args.progress_folder, save_progress=args.save_progress)
 
-final_image = elementariser.run()
+final_image, _ = elementariser.run()
 final_image = Image.fromarray(final_image, mode="RGB")
 final_image.save(args.output)

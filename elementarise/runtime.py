@@ -55,6 +55,8 @@ class Elementariser:
                use_tqdm:bool=False,
                visualise_progress:bool=False):
     """
+    Elementariser for reference image
+
     :param reference_image: Reference image
     :param checkpoint_image: Checkpoint image
     :param process_scale_factor: Scale of processing image
@@ -84,8 +86,6 @@ class Elementariser:
     :param debug: Print debug
     :param use_tqdm: Show progress using tqdm
     :param visualise_progress: Show progress image using cv2
-
-    Elementariser for reference image
     """
 
     assert process_scale_factor > 0, "Invalid process scale factor, it should be larger than 0"
@@ -242,6 +242,13 @@ class Elementariser:
         display_image[:, :prog_image.shape[1], :] = prog_image
         display_image[:, prog_image.shape[1]:, :] = diff_image
 
+        display_image_width, display_image_height = display_image.shape[1], display_image.shape[0]
+        if display_image_width > 1920 or display_image_height > 1080:
+          scaler1 = 1920 / display_image_width
+          scaler2 = 1080 / display_image_height
+          scaler = min(scaler1, scaler2)
+          display_image = cv2.resize(display_image, dsize=None, fx=scaler, fy=scaler, interpolation=cv2.INTER_AREA)
+
         cv2.imshow("progress_window", display_image)
         cv2.setWindowTitle("progress_window", f"{progress}/{self.elements}, Size: {self.min_size}-{self.max_size}")
         cv2.waitKey(1)
@@ -249,12 +256,13 @@ class Elementariser:
       if self.progress_callback is not None:
         self.progress_callback(cv2.cvtColor(prog_image, cv2.COLOR_BGR2RGB), progress / self.elements)
 
-  def run(self) -> np.ndarray:
+  def run(self) -> typing.Tuple[np.ndarray, int]:
     """
-    :return: Final image
+    :return: Final image and elements drawn
     """
 
     param_store = []
+    iteration = 0
 
     try:
       _indexes = list(range(self.batch_size))
@@ -286,7 +294,7 @@ class Elementariser:
             else:
               retries += 1
               if retries >= self.num_of_retries:
-                if len(self.all_zones) > 1:
+                if len(self.all_zones) > 1 and self.tile_select_mode != TileSelectMode.TARGET:
                   retries = 0
                   self.all_zones.remove(zone_data)
                   zone_data = self.__get_zone_data()
@@ -294,7 +302,7 @@ class Elementariser:
                   min_width, max_width, min_height, max_height = zone_data
                   get_params_function = partial(process_data, self.reference_image, self.process_image, self.element_type, self.max_size, self.min_size, min_width, max_width, min_height, max_height, self.min_alpha, self.max_alpha, self.process_metrics)
 
-                  self.__call_callback(iteration, zone_data)
+                  self.__call_callback(iteration + 1, zone_data)
                   if isinstance(iterator, tqdm):
                     iterator.set_description(f"Size: {self.min_size}-{self.max_size}")
                   continue
@@ -312,7 +320,7 @@ class Elementariser:
 
           self.current_distance -= distance_diff
 
-          self.__call_callback(iteration, zone_data, bbox)
+          self.__call_callback(iteration + 1, zone_data, bbox)
           if isinstance(iterator, tqdm):
             iterator.set_description(f"Size: {self.min_size}-{self.max_size}")
     except KeyboardInterrupt:
@@ -324,4 +332,116 @@ class Elementariser:
     if self.visualise_progress:
       cv2.destroyWindow("progress_window")
 
-    return generate_output_image(self.output_image, param_store, self.output_image.shape[1] / self.width, self.save_progress, self.progress_save_path, use_tqdm=self.use_tqdm, debug=self.debug)
+    return generate_output_image(self.output_image, param_store, self.output_image.shape[1] / self.width, self.save_progress, self.progress_save_path, use_tqdm=self.use_tqdm, debug=self.debug), iteration + 1
+
+class AutoElementariser:
+  def __init__(self,
+               reference_image: np.ndarray,
+               checkpoint_image: typing.Optional[np.ndarray] = None,
+               output_scale_factor: float = 1.0,
+               num_of_elements: int = 2000,
+               batch_size: int = 200,
+               num_of_retries: int = 20,
+               element_type:typing.Union[ElementType, str]=ElementType.LINE,
+               workers: int = 1,
+               save_progress: bool = False,
+               progress_save_path: str = "tmp",
+               progress_callback: typing.Optional[typing.Callable[[np.ndarray, float], None]] = None,
+               custom_process_metrics: typing.Optional[typing.Tuple[typing.Callable[[np.ndarray, np.ndarray], float], typing.Union[MetricsMode, str]]] = None,
+               custom_evaluation_metrics: typing.Optional[typing.Tuple[typing.Callable[[np.ndarray, np.ndarray], float], typing.Union[MetricsMode, str]]] = None,
+               min_improvement: int = 2000,
+               debug_on_progress_image: bool = False,
+               debug: bool = False,
+               use_tqdm: bool = False,
+               visualise_progress: bool = False):
+    """
+    Prebuild elementariser with generation scheduler
+
+    :param reference_image: Reference image
+    :param checkpoint_image: Checkpoint image
+    :param output_scale_factor: Scale of output image
+    :param num_of_elements: Number of elements to draw
+    :param batch_size: Number of test elements in epoch
+    :param num_of_retries: Limit number of tries per element
+    :param element_type: Element used for recreating reference image
+    :param workers: Number of workers for generating elements
+    :param save_progress: Store progress of generation
+    :param progress_save_path: Path to folder where progress imagis will be saved
+    :param progress_callback: Function that will be called on each each progress step
+    :param custom_process_metrics: Custom metrics function for generating image
+    :param custom_evaluation_metrics: Custom metrics function for evaluation of progress image (used for priory mode)
+    :param min_improvement: Minimal improvement of metrics for adding new element
+    :param debug_on_progress_image: Draw progress details on progress image
+    :param debug: Print debug
+    :param use_tqdm: Show progress using tqdm
+    :param visualise_progress: Show progress image using cv2
+    """
+
+    assert output_scale_factor > 0, "Invalid output scale factor, it should be larger than 0"
+    assert workers >= 1, "Invalid number of workers"
+    assert min_improvement >= 0, "Invalid minimal improvement settings, improvement need to be >= 0"
+
+    if isinstance(element_type, str):
+      element_type = string_to_element_type(element_type)
+
+    self.reference_image = reference_image
+    self.checkpoint_image = checkpoint_image
+
+    self.output_scale_factor = output_scale_factor
+
+    self.num_of_elements = num_of_elements
+    self.batch_size = batch_size
+    self.num_of_retries = num_of_retries
+    self.element_type = element_type
+
+    self.workers = workers
+
+    self.save_progress = save_progress
+    self.progress_save_path = progress_save_path
+
+    self.progress_callback = progress_callback
+
+    self.custom_progress_metrics = custom_process_metrics
+    self.custom_evaluation_metrics = custom_evaluation_metrics
+    self.min_improvement = min_improvement
+
+    self.debug_on_progress_image = debug_on_progress_image
+    self.debug = debug
+    self.use_tqdm = use_tqdm
+    self.visualise_progress = visualise_progress
+
+  def run(self) -> typing.Tuple[np.ndarray, int]:
+    """
+    :return: Final image and elements drawn
+    """
+
+    all_generated_elements = 0
+
+    for scale, divs in zip([0.125, 0.25, 0.5, 1], [2, 2, 4, 8]):
+      elementariser = Elementariser(self.reference_image,
+                                    self.checkpoint_image,
+                                    scale,
+                                    self.output_scale_factor,
+                                    self.num_of_elements,
+                                    self.batch_size,
+                                    self.num_of_retries,
+                                    divs, divs,
+                                    element_type=self.element_type,
+                                    workers=self.workers,
+                                    save_progress=self.save_progress,
+                                    progress_save_path=self.progress_save_path,
+                                    progress_callback=self.progress_callback,
+                                    custom_process_metrics=self.custom_progress_metrics,
+                                    custom_evaluation_metrics=self.custom_evaluation_metrics,
+                                    min_improvement=self.min_improvement,
+                                    debug_on_progress_image=self.debug_on_progress_image,
+                                    debug=self.debug,
+                                    use_tqdm=self.use_tqdm,
+                                    visualise_progress=self.visualise_progress)
+      self.checkpoint_image, generated_elements = elementariser.run()
+      all_generated_elements += generated_elements
+      self.num_of_elements -= generated_elements
+      if self.num_of_elements <= 0:
+        break
+
+    return self.checkpoint_image, all_generated_elements
